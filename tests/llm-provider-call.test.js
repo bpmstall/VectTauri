@@ -670,3 +670,36 @@ describe('postChatCompletion — backup model fallback', () => {
         expect(JSON.parse(fetchMock.mock.calls[2][1].body).model).toBe('test/model');
     });
 });
+
+describe('postChatCompletion — VectTauri-only API key', () => {
+    const base = { messages: [{ role: 'user', content: 'x' }], model: 'm', maxTokens: 10, temperature: 0.2, timeoutMs: 1000, contextLabel: 'T' };
+
+    it('without a dedicated key, leaves auth to the shared ST slot (legacy behavior)', async () => {
+        const fetchMock = vi.fn(async () => okResponse({ content: 'hi' }));
+        vi.stubGlobal('fetch', fetchMock);
+        await postChatCompletion({ ...base, provider: 'openrouter' });
+        const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+        expect(body.chat_completion_source).toBe('openrouter');
+        expect(body.custom_include_headers).toBeUndefined();
+    });
+
+    it('custom provider + dedicated key overrides Authorization per request', async () => {
+        const fetchMock = vi.fn(async () => okResponse({ content: 'hi' }));
+        vi.stubGlobal('fetch', fetchMock);
+        await postChatCompletion({ ...base, provider: 'vllm', vllmUrl: 'http://h/v1', apiKey: ' sk-own ' });
+        const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+        expect(body.chat_completion_source).toBe('custom');
+        expect(body.custom_url).toBe('http://h/v1');
+        expect(JSON.parse(body.custom_include_headers)).toEqual({ Authorization: 'Bearer sk-own' });
+    });
+
+    it('openrouter + dedicated key is routed via the custom source so the shared slot is bypassed', async () => {
+        const fetchMock = vi.fn(async () => okResponse({ content: 'hi' }));
+        vi.stubGlobal('fetch', fetchMock);
+        await postChatCompletion({ ...base, provider: 'openrouter', apiKey: 'sk-or-own' });
+        const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+        expect(body.chat_completion_source).toBe('custom');
+        expect(body.custom_url).toBe('https://openrouter.ai/api/v1');
+        expect(JSON.parse(body.custom_include_headers)).toEqual({ Authorization: 'Bearer sk-or-own' });
+    });
+});

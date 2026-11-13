@@ -21,7 +21,7 @@
  */
 
 import { insertVectorItems, purgeVectorIndex } from './core-vector-api.js';
-import { postChatCompletion, resolveModelParameterStyle } from './llm-provider-call.js';
+import { postChatCompletion, resolveModelParameterStyle, resolveLlmCredentials } from './llm-provider-call.js';
 
 const EMBED_TIMEOUT_MS = 60000;
 const LLM_TIMEOUT_MS = 30000;
@@ -94,6 +94,7 @@ export async function testLlmConnection(settings, modelOverride = '') {
             sendTemperature: style.sendTemperature,
             tokenLimitParameter: style.tokenLimitParameter,
             reasoningEffort: style.reasoningEffort,
+            ...resolveLlmCredentials(settings),
         });
         const preview = String(content || '').replace(/\s+/g, ' ').trim().slice(0, 60);
         return { ok: true, message: `LLM OK — ${provider} · ${model}: ${preview || '(empty reply)'}` };

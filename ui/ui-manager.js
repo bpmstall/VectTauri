@@ -480,6 +480,16 @@ export function renderSettings(containerId, settings, callbacks) {
 
                                 <div id="VectTauri_summarize_settings" style="display:none; margin-top:12px;">
 
+                                    <div id="VectTauri_summarize_dedicated_key_row" style="margin-bottom:10px;">
+                                        <label for="VectTauri_summarize_dedicated_key">
+                                            <small>VectTauri-only API Key <span style="opacity:0.6;">(optional)</span></small>
+                                        </label>
+                                        <input type="password" id="VectTauri_summarize_dedicated_key" class="vecttauri-input"
+                                            placeholder="Paste key here to save..." autocomplete="off" />
+                                        <button type="button" id="VectTauri_summarize_dedicated_key_clear" class="menu_button" style="margin-top:4px; width:auto; white-space:nowrap;"><i class="fa-solid fa-trash-can"></i> Clear saved key</button>
+                                        <small class="VectTauri_hint">Used only for summarization / EventBase / Agent Mode / Auto-Reformat, so changing the provider or key in TauriTavern's main chat no longer changes it. Leave empty to use the shared key below (the one TauriTavern also uses).</small>
+                                    </div>
+
                                     <div id="VectTauri_summarize_openrouter_row" style="display:none; margin-bottom:10px;">
                                         <label for="VectTauri_summarize_openrouter_apikey">
                                             <small>OpenRouter API Key</small>
@@ -3113,6 +3123,34 @@ function bindSettingsEvents(settings, callbacks) {
             saveLlmConfigFields({ chat_vllm_url: settings.chat_vllm_url });
             saveSettingsDebounced();
         });
+
+    // VectTauri-only LLM key — kept in VectTauri settings, never in ST's shared
+    // slots, so the main chat's provider/key can change freely. See
+    // core/api-keys.js::getDedicatedLlmApiKey.
+    const updateDedicatedKeyDisplay = () => {
+        const saved = String(settings.chat_api_key || '').trim();
+        $('#VectTauri_summarize_dedicated_key').attr('placeholder', saved
+            ? `Key saved: ${'*'.repeat(Math.min(Math.max(saved.length - 4, 0), 8))}${saved.slice(-4)} (VectTauri only)`
+            : 'Paste key here to save...');
+    };
+    updateDedicatedKeyDisplay();
+    $('#VectTauri_summarize_dedicated_key').on('change', function() {
+        const value = String($(this).val()).trim();
+        if (!value) return;
+        settings.chat_api_key = value;
+        Object.assign(extension_settings.vecttauri, settings);
+        saveSettingsDebounced();
+        $(this).val('');
+        updateDedicatedKeyDisplay();
+        toastr.success('VectTauri-only LLM key saved');
+    });
+    $('#VectTauri_summarize_dedicated_key_clear').on('click', function() {
+        settings.chat_api_key = '';
+        Object.assign(extension_settings.vecttauri, settings);
+        saveSettingsDebounced();
+        updateDedicatedKeyDisplay();
+        toastr.info('VectTauri-only LLM key cleared — falling back to the shared key');
+    });
 
     // vLLM API key (summarize input) — writes to SECRET_KEYS.CUSTOM
     // 2026-05-26 architecture pivot: ONE vLLM key shared across

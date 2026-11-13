@@ -212,6 +212,19 @@ export function resolveModelParameterStyle(settings = {}) {
 }
 
 /**
+ * The VectTauri-only LLM key, shaped for spreading into postChatCompletion.
+ * Empty → the call falls back to SillyTavern's shared key slot (legacy behavior).
+ * @param {object} [settings]
+ * @returns {{apiKey: string}}
+ */
+export function resolveLlmCredentials(settings = {}) {
+    return { apiKey: String(settings?.chat_api_key || '').trim() };
+}
+
+/** OpenRouter's OpenAI-compatible root, used when a dedicated key must bypass ST's shared slot. */
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+
+/**
  * POST a chat-completion through SillyTavern's proxy and return the assistant
  * content. Handles both providers (OpenRouter and vLLM/custom route through the
  * same `/api/backends/chat-completions/generate` proxy — the real key is read
@@ -238,6 +251,8 @@ export function resolveModelParameterStyle(settings = {}) {
  *        (reasoning models accept only their own default). From resolveModelParameterStyle.
  * @param {string}   [opts.tokenLimitParameter='max_tokens'] body key for the output-token
  *        cap — 'max_completion_tokens' for reasoning models. From resolveModelParameterStyle.
+ * @param {string}   [opts.apiKey=''] VectTauri-only key (settings.chat_api_key). When set it is
+ *        sent per request and the shared SillyTavern key slot is NOT used. From resolveLlmCredentials.
  * @param {string|null} [opts.reasoningEffort=null] sent as `reasoning_effort` when set;
  *        'none' turns a reasoning model's thinking off entirely. From
  *        resolveModelParameterStyle.
@@ -260,8 +275,10 @@ export async function postChatCompletion({
     tokenLimitParameter = 'max_tokens',
     reasoningEffort = null,
     backupModel = '',
+    apiKey = '',
 }) {
     const label = _providerLabel(provider);
+    const dedicatedKey = String(apiKey || '').trim();
 
     const buildRequest = (modelId) => {
         const body = { model: modelId, messages, [tokenLimitParameter]: maxTokens };
@@ -275,7 +292,23 @@ export async function postChatCompletion({
         // accepted it without error), so it needs no per-model gate.
         if (reasoningEffort) body.reasoning_effort = reasoningEffort;
 
-        return (provider === 'vllm' || provider === 'custom')
+        const isCustom = provider === 'vllm' || provider === 'custom';
+
+        // Dedicated VectTauri key: ST's proxy reads the shared slot (the one the
+        // main chat uses) unless told otherwise, so route through the 'custom'
+        // source and override the Authorization header per request. ST merges
+        // `custom_include_headers` (YAML; JSON is valid YAML) over its own
+        // headers. OpenRouter is just an OpenAI-compatible endpoint here.
+        if (dedicatedKey) {
+            return {
+                chat_completion_source: 'custom',
+                custom_url: isCustom ? vllmUrl : OPENROUTER_BASE_URL,
+                custom_include_headers: JSON.stringify({ Authorization: `Bearer ${dedicatedKey}` }),
+                ...body,
+            };
+        }
+
+        return isCustom
             ? { chat_completion_source: 'custom', custom_url: vllmUrl, ...body }
             : { chat_completion_source: 'openrouter', ...body };
     };

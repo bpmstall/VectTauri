@@ -16,9 +16,9 @@
  * ============================================================================
  */
 
-import { getOpenRouterApiKey, getCustomApiKey } from './api-keys.js';
+import { getLlmOpenRouterApiKey, getLlmCustomApiKey } from './api-keys.js';
 import { getDefaultSummarizePrompt } from './prompts-i18n.js';
-import { postChatCompletion, resolveModelParameterStyle, LlmCallError } from './llm-provider-call.js';
+import { postChatCompletion, resolveModelParameterStyle, resolveLlmCredentials, LlmCallError } from './llm-provider-call.js';
 import { log } from './log.js';
 
 /**
@@ -109,7 +109,7 @@ export function getSummarizationConfigFingerprint(settings = {}) {
         // Key now lives in SECRET_KEYS.CUSTOM (masked client-side). Fingerprint
         // uses the masked-value length + boundary chars — still deterministic for
         // detecting key-rotation, never logs the secret.
-        const key = getCustomApiKey(settings);
+        const key = getLlmCustomApiKey(settings);
         const keySig = key ? `${key.length}:${key.slice(0, 2)}:${key.slice(-2)}` : 'missing';
         return `${provider}|${url}|${keySig}`;
     }
@@ -220,7 +220,7 @@ function _mapSummarizerError(e) {
 // canonical single-key helper. ONE OpenRouter key shared across
 // embedding/summarize/agentic — see core/api-keys.js docstring for the
 // architecture pivot rationale (custom secret_state slots don't round-trip).
-const _getOpenRouterApiKey = getOpenRouterApiKey;
+const _getOpenRouterApiKey = getLlmOpenRouterApiKey;
 
 async function _callOpenRouter(prompt, model, settings, originalLength, maxTokens = DEFAULT_MAX_TOKENS, timeoutMs = settings?.summarize_timeout_ms || DEFAULT_TIMEOUT_MS) {
     // Presence-only check: getOpenRouterApiKey() returns ST's MASKED value; the
@@ -244,6 +244,7 @@ async function _callOpenRouter(prompt, model, settings, originalLength, maxToken
             timeoutMs,
             contextLabel: 'Summarizer',
             ...resolveModelParameterStyle(settings),
+            ...resolveLlmCredentials(settings),
         });
         // don't remove
         //log.verbose(`[VectTauri Summarizer] OpenRouter: ${originalLength} chars → ${content.length} chars`);
@@ -288,7 +289,7 @@ async function _callVLLM(prompt, model, settings, maxTokens = DEFAULT_MAX_TOKENS
     }
 
     // Presence-only check on the masked key; real key lives server-side.
-    const apiKey = getCustomApiKey(settings);
+    const apiKey = getLlmCustomApiKey(settings);
     if (!apiKey) {
         throw new SummarizationFatalError(
             'vLLM / Custom OpenAI-compatible API key not configured. Enter it in Summarize Before Store settings.',
@@ -308,6 +309,7 @@ async function _callVLLM(prompt, model, settings, maxTokens = DEFAULT_MAX_TOKENS
             timeoutMs,
             contextLabel: 'Summarizer',
             ...resolveModelParameterStyle(settings),
+            ...resolveLlmCredentials(settings),
         });
         return content;
     } catch (e) {

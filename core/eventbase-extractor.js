@@ -11,8 +11,8 @@
  * ============================================================================
  */
 
-import { getOpenRouterApiKey, getCustomApiKey } from './api-keys.js';
-import { postChatCompletion, parseJsonArrayFromLlm, resolveModelParameterStyle, LlmCallError } from './llm-provider-call.js';
+import { getLlmOpenRouterApiKey, getLlmCustomApiKey } from './api-keys.js';
+import { postChatCompletion, parseJsonArrayFromLlm, resolveModelParameterStyle, resolveLlmCredentials, LlmCallError } from './llm-provider-call.js';
 import {
     EVENT_TYPES,
     EventBaseExtractionError,
@@ -58,7 +58,7 @@ const DEFAULT_TIMEOUT_MS = 60000;
 // _getOpenRouterApiKey lived inline here pre-H-1; now an alias for the
 // canonical single-key helper. ONE OpenRouter key shared across
 // embedding/summarize/agentic — see core/api-keys.js docstring.
-const _getOpenRouterApiKey = getOpenRouterApiKey;
+const _getOpenRouterApiKey = getLlmOpenRouterApiKey;
 
 // ---------------------------------------------------------------------------
 // Error mapping
@@ -167,6 +167,7 @@ async function _callOpenRouter(prompt, settings, windowIndex) {
             contextLabel: 'EventBase',
             backupModel: settings.chat_model_backup || '',
             ...resolveModelParameterStyle(settings),
+            ...resolveLlmCredentials(settings),
         });
         return content;
     } catch (e) {
@@ -191,7 +192,7 @@ async function _callVLLM(prompt, settings, windowIndex) {
         );
     }
 
-    const apiKey = getCustomApiKey(settings);
+    const apiKey = getLlmCustomApiKey(settings);
     if (!apiKey) {
         throw new EventBaseFatalError(
             'EventBase: vLLM / Custom OpenAI-compatible API key not configured. Enter it in Core → LLM Summarization settings.',
@@ -211,6 +212,7 @@ async function _callVLLM(prompt, settings, windowIndex) {
             contextLabel: 'EventBase',
             backupModel: settings.chat_model_backup || '',
             ...resolveModelParameterStyle(settings),
+            ...resolveLlmCredentials(settings),
         });
         return content;
     } catch (e) {

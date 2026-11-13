@@ -21,8 +21,8 @@
  * ============================================================================
  */
 
-import { getOpenRouterApiKey, getCustomApiKey } from './api-keys.js';
-import { postChatCompletion, parseJsonArrayFromLlm, resolveModelParameterStyle, LlmCallError } from './llm-provider-call.js';
+import { getLlmOpenRouterApiKey, getLlmCustomApiKey } from './api-keys.js';
+import { postChatCompletion, parseJsonArrayFromLlm, resolveModelParameterStyle, resolveLlmCredentials, LlmCallError } from './llm-provider-call.js';
 import { chunkText } from './chunking.js';
 import AsyncUtils from '../utils/async-utils.js';
 import {
@@ -94,7 +94,7 @@ function _mapReformatError(e, batchIndex) {
 }
 
 async function _callOpenRouter(prompt, settings, batchIndex) {
-    const apiKey = getOpenRouterApiKey(settings);
+    const apiKey = getLlmOpenRouterApiKey(settings);
     if (!apiKey) {
         throw new ReformatFatalError(
             'Auto-Reformat: OpenRouter API key not found. Add it in Core → LLM Summarization settings (Auto-Reformat inherits it unless overridden in ChunkBase settings).',
@@ -121,6 +121,7 @@ async function _callOpenRouter(prompt, settings, batchIndex) {
             contextLabel: 'Auto-Reformat',
             shouldNotifyProviderFailure: false,
             ...resolveModelParameterStyle(settings),
+            ...resolveLlmCredentials(settings),
         });
         return { reply: content, finishReason };
     } catch (e) {
@@ -151,7 +152,7 @@ async function _callVLLM(prompt, settings, batchIndex) {
         );
     }
 
-    const apiKey = getCustomApiKey(settings);
+    const apiKey = getLlmCustomApiKey(settings);
     if (!apiKey) {
         throw new ReformatFatalError(
             'Auto-Reformat: vLLM / Custom OpenAI-compatible API key not configured. Enter it in Core → LLM Summarization settings.',
@@ -171,6 +172,7 @@ async function _callVLLM(prompt, settings, batchIndex) {
             contextLabel: 'Auto-Reformat',
             shouldNotifyProviderFailure: false,
             ...resolveModelParameterStyle(settings),
+            ...resolveLlmCredentials(settings),
         });
         return { reply: content, finishReason };
     } catch (e) {
