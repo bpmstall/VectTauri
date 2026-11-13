@@ -585,7 +585,8 @@ export class StandardBackend extends VectorBackend {
         // OpenAI-compatible sources embed client-side: the store knows nothing
         // about their base URL, so asking it to embed would just fail.
         if (settings?.embedding_provider === 'electronhub' || settings?.embedding_provider === 'custom') {
-            const { embeddings } = await createOpenAiCompatibleEmbeddings([searchText], settings);
+            // Returns a text -> vector record, not a { embeddings } wrapper.
+            const embeddings = await createOpenAiCompatibleEmbeddings([searchText], settings);
             return embeddings?.[searchText] ?? null;
         }
         if (!this.pluginAvailable) return null;
