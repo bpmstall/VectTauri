@@ -99,6 +99,12 @@ const defaultSettings = {
     openai_model: 'text-embedding-ada-002',
     electronhub_model: 'text-embedding-3-small',
     embedding_openrouter_model: 'openai/text-embedding-3-large',
+    embedding_electronhub_model: 'text-embedding-3-small',
+    embedding_electronhub_url: '',
+    embedding_electronhub_api_key: '',
+    embedding_custom_url: '',
+    embedding_custom_model: '',
+    embedding_custom_api_key: '',
     // OpenRouter key: stored in SECRET_KEYS.OPENROUTER (ST's shared slot, not in
     // defaults). Reader: core/api-keys.js::getOpenRouterApiKey. The legacy
     // plaintext slot used to live here as `openrouter_api_key: ''` but kept
@@ -185,6 +191,7 @@ const defaultSettings = {
     // re-introduction loop documented above on the embedding-side keys.
     // Readers: core/api-keys.js helpers.
     chat_model: '',              // Model ID for summarization (e.g. 'google/gemini-flash-1.5-8b')
+    chat_api_key: '',            // Optional VectTauri-only LLM key; empty → shared ST slot (see core/api-keys.js getDedicatedLlmApiKey)
     chat_model_backup: '',       // Optional fallback model, same provider — used once on timeout/429/5xx
     chat_vllm_url: '',           // vLLM base URL for summarization (e.g. 'http://127.0.0.1:8000')
     summarize_prompt: '',             // Custom prompt template (empty = use built-in default)

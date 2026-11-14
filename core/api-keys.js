@@ -186,6 +186,37 @@ export function getCustomApiKey(settings) {
 }
 
 /**
+ * VectTauri's OWN LLM key for summarization / EventBase / Agent Mode / Auto-Reformat.
+ *
+ * Why it exists: the shared ST slots above (OPENROUTER / CUSTOM) are the same
+ * ones SillyTavern / TauriTavern's MAIN chat uses. Switching the main chat to a
+ * different provider or key silently re-pointed VectTauri's LLM calls too, even
+ * when the user had configured a separate summarization provider. A key set here
+ * is sent per-request (see postChatCompletion `apiKey`) and never touches the
+ * shared slot, so the main chat connection and VectTauri's LLM are independent.
+ *
+ * Stored in VectTauri settings (`chat_api_key`) because ST's masked secret state
+ * cannot hand the real value back to the client — same trade-off as the
+ * Electron Hub / Custom embedding keys.
+ *
+ * @param {object} [settings]
+ * @returns {string} trimmed key, or '' when none is set
+ */
+export function getDedicatedLlmApiKey(settings) {
+    return String(settings?.chat_api_key || '').trim();
+}
+
+/** LLM-call presence check for OpenRouter: dedicated key first, else the shared ST slot. */
+export function getLlmOpenRouterApiKey(settings) {
+    return getDedicatedLlmApiKey(settings) || getOpenRouterApiKey(settings);
+}
+
+/** LLM-call presence check for Custom/vLLM: dedicated key first, else the shared ST slot. */
+export function getLlmCustomApiKey(settings) {
+    return getDedicatedLlmApiKey(settings) || getCustomApiKey(settings);
+}
+
+/**
  * @deprecated Use {@link getCustomApiKey}. Kept as an alias for the
  * transition period; both readers point at the same `SECRET_KEYS.CUSTOM`
  * slot. Pre-2026-05-26 callers expected plaintext from

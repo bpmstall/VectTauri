@@ -24,8 +24,8 @@ import { retrieveEvents } from './eventbase-retrieval.js';
 import { queryCollection } from './core-vector-api.js';
 import { buildPlannerUserMessage, getAgenticPlannerPrompt } from './prompts-i18n.js';
 import { stripReasoningBlocks, stripGameSystemBlocks } from './text-cleaning.js';
-import { getOpenRouterApiKey, getCustomApiKey } from './api-keys.js';
-import { postChatCompletion, resolveModelParameterStyle, LlmCallError } from './llm-provider-call.js';
+import { getLlmOpenRouterApiKey, getLlmCustomApiKey } from './api-keys.js';
+import { postChatCompletion, resolveModelParameterStyle, resolveLlmCredentials, LlmCallError } from './llm-provider-call.js';
 import { generationRateLimiter, generationRateLimitSettings } from './generation-rate-limiter.js';
 import { resolveAgenticPlannerTimeoutMs, resolveAgenticQueryTimeoutMs, resolveAgenticMaxTokens } from './retrieval-budget.js';
 import { log } from './log.js';
@@ -322,11 +322,11 @@ export function _resolveAgenticLLMConfig(settings = {}) {
         // "(empty → inherit summarize key)" placeholder is now a
         // no-op visual hint; all three inputs (embedding/summarize/
         // agentic) write the same SECRET_KEYS.OPENROUTER slot.
-        const apiKey = getOpenRouterApiKey(settings);
+        const apiKey = getLlmOpenRouterApiKey(settings);
         if (!apiKey) {
             return { ok: false, reason: 'missing_openrouter_api_key' };
         }
-        return { ok: true, provider, model, apiKey, parameterStyle: resolveModelParameterStyle(settings) };
+        return { ok: true, provider, model, apiKey, parameterStyle: { ...resolveModelParameterStyle(settings), ...resolveLlmCredentials(settings) } };
     }
 
     if (provider === 'vllm' || provider === 'custom') {
@@ -337,11 +337,11 @@ export function _resolveAgenticLLMConfig(settings = {}) {
         // Key lives in SECRET_KEYS.CUSTOM (masked client-side). getCustomApiKey
         // returns the masked presence indicator; real key is read server-side
         // by ST's chat-completions proxy. Same shared slot as summarize/agent.
-        const apiKey = getCustomApiKey(settings);
+        const apiKey = getLlmCustomApiKey(settings);
         if (!apiKey) {
             return { ok: false, reason: 'missing_vllm_api_key' };
         }
-        return { ok: true, provider, model, vllmUrl, apiKey, parameterStyle: resolveModelParameterStyle(settings) };
+        return { ok: true, provider, model, vllmUrl, apiKey, parameterStyle: { ...resolveModelParameterStyle(settings), ...resolveLlmCredentials(settings) } };
     }
 
     return { ok: false, reason: `unknown_provider_${provider}` };

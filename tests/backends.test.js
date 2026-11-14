@@ -537,6 +537,23 @@ describe('StandardBackend', () => {
             await expect(backend.embedQuery('text', defaultSettings)).resolves.toEqual([0.1, 0.2]);
             expect(fetchMock).toHaveBeenCalledWith('/api/plugins/similharity/get-embedding', expect.objectContaining({ method: 'POST' }));
         });
+
+        it.each(['electronhub', 'custom'])('embeds client-side and returns the vector for the %s source', async (provider) => {
+            backend.pluginAvailable = false;
+            fetchMock.mockResolvedValueOnce(mockFetchResponse({
+                data: [{ index: 0, embedding: [0.3, 0.4] }],
+            }));
+            const settings = {
+                ...defaultSettings,
+                embedding_provider: provider,
+                embedding_custom_url: 'https://x.test/v1',
+                embedding_custom_model: 'm',
+                embedding_custom_api_key: 'k',
+                embedding_electronhub_api_key: 'k',
+            };
+
+            await expect(backend.embedQuery('text', settings)).resolves.toEqual([0.3, 0.4]);
+        });
     });
 
     describe('purgeAllVectorIndexes', () => {
