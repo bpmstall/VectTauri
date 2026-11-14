@@ -480,16 +480,6 @@ export function renderSettings(containerId, settings, callbacks) {
 
                                 <div id="VectTauri_summarize_settings" style="display:none; margin-top:12px;">
 
-                                    <div id="VectTauri_summarize_dedicated_key_row" style="margin-bottom:10px;">
-                                        <label for="VectTauri_summarize_dedicated_key">
-                                            <small>VectTauri-only API Key <span style="opacity:0.6;">(optional)</span></small>
-                                        </label>
-                                        <input type="password" id="VectTauri_summarize_dedicated_key" class="vecttauri-input"
-                                            placeholder="Paste key here to save..." autocomplete="off" />
-                                        <button type="button" id="VectTauri_summarize_dedicated_key_clear" class="menu_button" style="margin-top:4px; width:auto; white-space:nowrap;"><i class="fa-solid fa-trash-can"></i> Clear saved key</button>
-                                        <small class="VectTauri_hint">Used only for summarization / EventBase / Agent Mode / Auto-Reformat, so changing the provider or key in TauriTavern's main chat no longer changes it. Leave empty to use the shared key below (the one TauriTavern also uses).</small>
-                                    </div>
-
                                     <div id="VectTauri_summarize_openrouter_row" style="display:none; margin-bottom:10px;">
                                         <label for="VectTauri_summarize_openrouter_apikey">
                                             <small>OpenRouter API Key</small>
@@ -497,7 +487,7 @@ export function renderSettings(containerId, settings, callbacks) {
                                         <input type="password" id="VectTauri_summarize_openrouter_apikey" class="vecttauri-input"
                                             placeholder="Paste key here to save..." autocomplete="off" />
                                         <button type="button" id="VectTauri_summarize_openrouter_apikey_clear" class="menu_button" style="margin-top:4px; width:auto; white-space:nowrap;"><i class="fa-solid fa-trash-can"></i> Clear saved key</button>
-                                        <small class="VectTauri_hint">Stored in VectTauri settings (separate from the embedding key)</small>
+                                        <small class="VectTauri_hint">Used only by VectTauri for summarization / EventBase / Agent Mode. Changing the provider or key in TauriTavern does not affect it.</small>
                                     </div>
 
                                     <div id="VectTauri_summarize_vllm_url_row" style="display:none; margin-bottom:10px;">
@@ -2986,6 +2976,10 @@ function bindSettingsEvents(settings, callbacks) {
                     body: JSON.stringify({
                         chat_completion_source: 'custom',
                         custom_url: baseUrl,
+                        // VectTauri's own key, when set, instead of the shared slot.
+                        ...(String(settings.chat_api_key || '').trim()
+                            ? { custom_include_headers: JSON.stringify({ Authorization: `Bearer ${String(settings.chat_api_key).trim()}` }) }
+                            : {}),
                     }),
                 });
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -3124,140 +3118,49 @@ function bindSettingsEvents(settings, callbacks) {
             saveSettingsDebounced();
         });
 
-    // VectTauri-only LLM key — kept in VectTauri settings, never in ST's shared
-    // slots, so the main chat's provider/key can change freely. See
-    // core/api-keys.js::getDedicatedLlmApiKey.
-    const updateDedicatedKeyDisplay = () => {
-        const saved = String(settings.chat_api_key || '').trim();
-        $('#VectTauri_summarize_dedicated_key').attr('placeholder', saved
-            ? `Key saved: ${'*'.repeat(Math.min(Math.max(saved.length - 4, 0), 8))}${saved.slice(-4)} (VectTauri only)`
-            : 'Paste key here to save...');
+    // LLM API key inputs (Summarize + AgentMode × OpenRouter / vLLM-Custom).
+    //
+    // These keys are VectTauri's OWN (settings.chat_api_key) and are sent with
+    // each LLM request — see core/api-keys.js::getDedicatedLlmApiKey. They are
+    // deliberately NOT written to ST's shared secret slots: that slot is the
+    // main chat's key, so switching TauriTavern's provider used to silently
+    // re-point VectTauri's LLM calls. Embedding keys (separate inputs in the
+    // Embedding section) still use the shared slots and are unaffected.
+    //
+    // Until the user pastes a key here, calls fall back to the shared slot
+    // (previous behavior), and the placeholder says so.
+    const _llmKeyInputs = {
+        openrouter: ['#VectTauri_summarize_openrouter_apikey', '#VectTauri_agentic_openrouter_apikey'],
+        custom: ['#VectTauri_summarize_vllm_apikey', '#VectTauri_agentic_vllm_apikey'],
     };
-    updateDedicatedKeyDisplay();
-    $('#VectTauri_summarize_dedicated_key').on('change', function() {
-        const value = String($(this).val()).trim();
-        if (!value) return;
-        settings.chat_api_key = value;
-        Object.assign(extension_settings.vecttauri, settings);
-        saveSettingsDebounced();
-        $(this).val('');
-        updateDedicatedKeyDisplay();
-        toastr.success('VectTauri-only LLM key saved');
-    });
-    $('#VectTauri_summarize_dedicated_key_clear').on('click', function() {
-        settings.chat_api_key = '';
-        Object.assign(extension_settings.vecttauri, settings);
-        saveSettingsDebounced();
-        updateDedicatedKeyDisplay();
-        toastr.info('VectTauri-only LLM key cleared — falling back to the shared key');
-    });
-
-    // vLLM API key (summarize input) — writes to SECRET_KEYS.CUSTOM
-    // 2026-05-26 architecture pivot: ONE vLLM key shared across
-    // summarize/agentic chat paths, stored in ST's well-known
-    // SECRET_KEYS.CUSTOM slot (same slot ST's own Chat Completion →
-    // Custom (OpenAI-compatible) source uses). Real key lives server-side;
-    // client only sees a masked placeholder. Chat-side calls route through
-    // ST's /api/backends/chat-completions/generate proxy with
-    // `chat_completion_source: 'custom'` — see core/api-keys.js for the
-    // full rationale and the migration history.
-    //
-    // Embedding side reads SECRET_KEYS.VLLM (separate ST slot) — user
-    // configures that key in ST's Text Completion → vLLM UI directly,
-    // not through VectTauri. The two slots are intentionally separate so
-    // chat and embedding endpoints can use different credentials if the
-    // user wants.
-    //
-    // Cross-input refresh: each display function also listens for the
-    // `vecttauri:vllm-key-changed` custom event, so saving the key in any
-    // of the three inputs updates all three placeholders.
-    const updateSummarizeVllmKeyDisplay = () => {
-        const savedKey = getCustomApiKey(settings);
-        if (savedKey) {
-            const masked = savedKey.length > 4
-                ? '*'.repeat(Math.min(savedKey.length - 4, 8)) + savedKey.slice(-4)
-                : '*'.repeat(savedKey.length);
-            $('#VectTauri_summarize_vllm_apikey').attr('placeholder', `Key saved: ${masked} (shared with Embedding + AgentMode)`);
-        } else {
-            $('#VectTauri_summarize_vllm_apikey').attr('placeholder', 'Paste vLLM / Custom OpenAI-compatible key (shared with Embedding + AgentMode)');
+    const _maskKey = (k) => (k.length > 4 ? '*'.repeat(Math.min(k.length - 4, 8)) + k.slice(-4) : '*'.repeat(k.length));
+    const refreshLlmKeyPlaceholders = () => {
+        const own = String(settings.chat_api_key || '').trim();
+        for (const [kind, selectors] of Object.entries(_llmKeyInputs)) {
+            const shared = kind === 'openrouter' ? getOpenRouterApiKey(settings) : getCustomApiKey(settings);
+            const text = own
+                ? `Key saved: ${_maskKey(own)} (VectTauri only — separate from TauriTavern)`
+                : shared
+                    ? `Using TauriTavern's shared key (${_maskKey(shared)}). Paste a key here to use your own instead.`
+                    : (kind === 'openrouter' ? 'Paste OpenRouter key (used by VectTauri only)' : 'Paste API key (used by VectTauri only)');
+            selectors.forEach(sel => $(sel).attr('placeholder', text));
         }
     };
-    updateSummarizeVllmKeyDisplay();
-    $(document).on('vecttauri:vllm-key-changed', updateSummarizeVllmKeyDisplay);
-    $('#VectTauri_summarize_vllm_apikey').on('change', async function() {
-        const value = String($(this).val()).trim();
-        if (value) {
-            // Dual-write: CUSTOM (chat-side proxy) + VLLM (embedding-side
-            // proxy). One key, both slots. Either failure is non-fatal — toast
-            // the user which side didn't land so they can manually re-enter
-            // via ST's UI if needed.
-            const errors = [];
-            try {
-                await writeSecret(SECRET_KEYS.CUSTOM, value);
-            } catch (err) {
-                log.error('[VectTauri] writeSecret(SECRET_KEYS.CUSTOM) failed:', err);
-                errors.push('chat-side (CUSTOM)');
-            }
-            try {
-                await writeSecret(SECRET_KEYS.VLLM, value);
-            } catch (err) {
-                log.error('[VectTauri] writeSecret(SECRET_KEYS.VLLM) failed:', err);
-                errors.push('embedding-side (VLLM)');
-            }
-            await readSecretState();
-            if (errors.length === 0) {
-                toastr.success('vLLM API key saved (shared across embedding/summarize/agentic)');
-            } else if (errors.length === 2) {
-                toastr.error('Failed to save vLLM key to either slot — see console');
-                return;
-            } else {
-                toastr.warning(`vLLM key partially saved — ${errors.join(', ')} write failed. See console.`);
-            }
+    refreshLlmKeyPlaceholders();
+    // The shared-slot hint depends on ST's secret state, which the Embedding inputs can change.
+    $(document).on('vecttauri:openrouter-key-changed vecttauri:vllm-key-changed vecttauri:llm-key-changed', refreshLlmKeyPlaceholders);
+    for (const sel of [..._llmKeyInputs.openrouter, ..._llmKeyInputs.custom]) {
+        $(sel).on('change', function() {
+            const value = String($(this).val()).trim();
+            if (!value) return;
+            settings.chat_api_key = value;
+            Object.assign(extension_settings.vecttauri, settings);
+            saveSettingsDebounced();
             $(this).val('');
-            $(document).trigger('vecttauri:vllm-key-changed');
-        }
-    });
-
-    // OpenRouter API key (summarize input) — writes to SECRET_KEYS.OPENROUTER
-    // 2026-05-25: ONE OpenRouter key shared across embedding/summarize/agentic,
-    // stored in ST's well-known SECRET_KEYS.OPENROUTER slot (same slot ST's own
-    // Connection Profile uses). The real key value lives server-side; the client
-    // only ever sees a masked placeholder. Chat-completion calls are routed
-    // through ST's /api/backends/chat-completions/generate proxy so the server
-    // can read the real key — see core/api-keys.js for the full rationale.
-    //
-    // Cross-input refresh: each display function also listens for the
-    // `vecttauri:openrouter-key-changed` custom event, so saving the key in any
-    // of the three inputs updates all three placeholders immediately.
-    const updateSummarizeORKeyDisplay = () => {
-        const savedKey = getOpenRouterApiKey(settings);
-        if (savedKey) {
-            const masked = savedKey.length > 4
-                ? '*'.repeat(Math.min(savedKey.length - 4, 8)) + savedKey.slice(-4)
-                : '*'.repeat(savedKey.length);
-            $('#VectTauri_summarize_openrouter_apikey').attr('placeholder', `Key saved: ${masked} (shared with Embedding + AgentMode)`);
-        } else {
-            $('#VectTauri_summarize_openrouter_apikey').attr('placeholder', 'Paste OpenRouter key (shared with Embedding + AgentMode)');
-        }
-    };
-    updateSummarizeORKeyDisplay();
-    $(document).on('vecttauri:openrouter-key-changed', updateSummarizeORKeyDisplay);
-    $('#VectTauri_summarize_openrouter_apikey').on('change', async function() {
-        const value = String($(this).val()).trim();
-        if (value) {
-            try {
-                await writeSecret(SECRET_KEYS.OPENROUTER, value);
-                await readSecretState();
-                toastr.success('OpenRouter API key saved (shared across embedding/summarize/agentic)');
-            } catch (err) {
-                log.error('[VectTauri] writeSecret(SECRET_KEYS.OPENROUTER) failed:', err);
-                toastr.error('Failed to save OpenRouter key — see console');
-                return;
-            }
-            $(this).val('');
-            $(document).trigger('vecttauri:openrouter-key-changed');
-        }
-    });
+            $(document).trigger('vecttauri:llm-key-changed');
+            toastr.success('API key saved for VectTauri only (TauriTavern\'s own key is untouched)');
+        });
+    }
 
     // ─── AgentMode (Agentic Retrieval) ─────────────────────────────────────
     // Toggle provider-specific rows in the AgentMode tab. Treats empty provider
@@ -3295,40 +3198,6 @@ function bindSettingsEvents(settings, callbacks) {
             saveSettingsDebounced();
         });
 
-    // AgentMode OpenRouter input — writes to SECRET_KEYS.OPENROUTER
-    // (same shared slot as Embedding + Summarize inputs). Per the 2026-05-25
-    // architecture pivot, the "override" semantics are gone — there's now
-    // ONE OpenRouter key everywhere.
-    const updateAgenticORKeyDisplay = () => {
-        const savedKey = getOpenRouterApiKey(settings);
-        if (savedKey) {
-            const masked = savedKey.length > 4
-                ? '*'.repeat(Math.min(savedKey.length - 4, 8)) + savedKey.slice(-4)
-                : '*'.repeat(savedKey.length);
-            $('#VectTauri_agentic_openrouter_apikey').attr('placeholder', `Key saved: ${masked} (shared with Embedding + Summarize)`);
-        } else {
-            $('#VectTauri_agentic_openrouter_apikey').attr('placeholder', 'Paste OpenRouter key (shared with Embedding + Summarize)');
-        }
-    };
-    updateAgenticORKeyDisplay();
-    $(document).on('vecttauri:openrouter-key-changed', updateAgenticORKeyDisplay);
-    $('#VectTauri_agentic_openrouter_apikey').on('change', async function() {
-        const value = String($(this).val()).trim();
-        if (value) {
-            try {
-                await writeSecret(SECRET_KEYS.OPENROUTER, value);
-                await readSecretState();
-                toastr.success('OpenRouter API key saved (shared across embedding/summarize/agentic)');
-            } catch (err) {
-                log.error('[VectTauri] writeSecret(SECRET_KEYS.OPENROUTER) failed:', err);
-                toastr.error('Failed to save OpenRouter key — see console');
-                return;
-            }
-            $(this).val('');
-            $(document).trigger('vecttauri:openrouter-key-changed');
-        }
-    });
-
     $('#VectTauri_agentic_vllm_url')
         .val(settings.agent_vllm_url || '')
         .on('change', function() {
@@ -3336,55 +3205,6 @@ function bindSettingsEvents(settings, callbacks) {
             Object.assign(extension_settings.vecttauri, settings);
             saveSettingsDebounced();
         });
-
-    // AgentMode vLLM input — writes to SECRET_KEYS.CUSTOM (shared with
-    // Summarize input). Same architecture as the Summarize input above:
-    // chat-side routes through ST's chat-completions proxy with
-    // `chat_completion_source: 'custom'`; embedding-side reads
-    // SECRET_KEYS.VLLM (ST's Text Completion vLLM slot) separately.
-    const updateAgenticVllmKeyDisplay = () => {
-        const savedKey = getCustomApiKey(settings);
-        if (savedKey) {
-            const masked = savedKey.length > 4
-                ? '*'.repeat(Math.min(savedKey.length - 4, 8)) + savedKey.slice(-4)
-                : '*'.repeat(savedKey.length);
-            $('#VectTauri_agentic_vllm_apikey').attr('placeholder', `Key saved: ${masked} (shared with Embedding + Summarize)`);
-        } else {
-            $('#VectTauri_agentic_vllm_apikey').attr('placeholder', 'Paste vLLM / Custom OpenAI-compatible key (shared with Embedding + Summarize)');
-        }
-    };
-    updateAgenticVllmKeyDisplay();
-    $(document).on('vecttauri:vllm-key-changed', updateAgenticVllmKeyDisplay);
-    $('#VectTauri_agentic_vllm_apikey').on('change', async function() {
-        const value = String($(this).val()).trim();
-        if (value) {
-            // Dual-write: same pattern as the summarize input above.
-            const errors = [];
-            try {
-                await writeSecret(SECRET_KEYS.CUSTOM, value);
-            } catch (err) {
-                log.error('[VectTauri] writeSecret(SECRET_KEYS.CUSTOM) failed:', err);
-                errors.push('chat-side (CUSTOM)');
-            }
-            try {
-                await writeSecret(SECRET_KEYS.VLLM, value);
-            } catch (err) {
-                log.error('[VectTauri] writeSecret(SECRET_KEYS.VLLM) failed:', err);
-                errors.push('embedding-side (VLLM)');
-            }
-            await readSecretState();
-            if (errors.length === 0) {
-                toastr.success('vLLM API key saved (shared across embedding/summarize/agentic)');
-            } else if (errors.length === 2) {
-                toastr.error('Failed to save vLLM key to either slot — see console');
-                return;
-            } else {
-                toastr.warning(`vLLM key partially saved — ${errors.join(', ')} write failed. See console.`);
-            }
-            $(this).val('');
-            $(document).trigger('vecttauri:vllm-key-changed');
-        }
-    });
 
     // "Clear saved key" buttons — all 6 (Embedding / Summarize / AgentMode × OpenRouter / vLLM)
     // funnel through the single clearSharedApiKey() helper so the delete + refresh never drifts.
@@ -3403,10 +3223,23 @@ function bindSettingsEvents(settings, callbacks) {
         getCurrent: () => getCustomApiKey(settings),
         sharedWithST: true,
     };
-    ['#VectTauri_openrouter_apikey_clear', '#VectTauri_summarize_openrouter_apikey_clear', '#VectTauri_agentic_openrouter_apikey_clear']
-        .forEach(sel => $(sel).on('click', () => clearSharedApiKey(_openRouterClearOpts)));
-    ['#VectTauri_vllm_api_key_clear', '#VectTauri_summarize_vllm_apikey_clear', '#VectTauri_agentic_vllm_apikey_clear']
-        .forEach(sel => $(sel).on('click', () => clearSharedApiKey(_vllmClearOpts)));
+    // Embedding inputs clear the shared ST slots; the Summarize / AgentMode inputs
+    // only clear VectTauri's own LLM key (never TauriTavern's).
+    $('#VectTauri_openrouter_apikey_clear').on('click', () => clearSharedApiKey(_openRouterClearOpts));
+    $('#VectTauri_vllm_api_key_clear').on('click', () => clearSharedApiKey(_vllmClearOpts));
+    [..._llmKeyInputs.openrouter, ..._llmKeyInputs.custom].forEach(sel => {
+        $(`${sel}_clear`).on('click', () => {
+            if (!String(settings.chat_api_key || '').trim()) {
+                toastr.info('No VectTauri-only API key is saved.');
+                return;
+            }
+            settings.chat_api_key = '';
+            Object.assign(extension_settings.vecttauri, settings);
+            saveSettingsDebounced();
+            $(document).trigger('vecttauri:llm-key-changed');
+            toastr.info('VectTauri-only API key cleared — LLM calls fall back to the shared key.');
+        });
+    });
 
     // Sliders — chat depth, candidates, max queries
     const bindAgenticSlider = (inputId, valSpanId, settingKey, defaultVal) => {
