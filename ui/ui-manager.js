@@ -838,7 +838,7 @@ export function renderSettings(containerId, settings, callbacks) {
                                 <label for="VectTauri_reformat_vllm_url"><small>vLLM Base URL</small></label>
                                 <input type="text" id="VectTauri_reformat_vllm_url" class="vecttauri-input"
                                     placeholder="(empty → inherit summarize URL)" />
-                                <small class="VectTauri_hint">API key is shared with Embedding/Summarize/AgentMode — set it in Core → LLM Summarization.</small>
+                                <small class="VectTauri_hint">API key is inherited from Core → LLM Summarization — set it there.</small>
                             </div>
 
                             <label for="VectTauri_reformat_batch_chars">
@@ -2549,7 +2549,7 @@ async function clearSharedApiKey({ slots, changedEvent, label, getCurrent, share
     const warn = sharedWithST
         ? `\n\nThis is the same secret slot SillyTavern itself uses, so deleting it also affects your main chat if that's set to ${label}.`
         : '';
-    if (!confirm(`Delete the saved ${label} API key?\n\nIt is shared across Embedding, Summarization, and AgentMode.${warn}\n\nThis cannot be undone.`)) {
+    if (!confirm(`Delete the saved ${label} API key?\n\nThis is the Embedding key.${warn}\n\nThis cannot be undone.`)) {
         return;
     }
     const failed = [];
@@ -4981,9 +4981,9 @@ function bindSettingsEvents(settings, callbacks) {
             const masked = savedKey.length > 4
                 ? '*'.repeat(Math.min(savedKey.length - 4, 8)) + savedKey.slice(-4)
                 : '*'.repeat(savedKey.length);
-            $('#VectTauri_vllm_api_key').attr('placeholder', `Key saved: ${masked} (shared with Summarize + AgentMode)`);
+            $('#VectTauri_vllm_api_key').attr('placeholder', `Key saved: ${masked} (Embedding key — same slot as TauriTavern)`);
         } else {
-            $('#VectTauri_vllm_api_key').attr('placeholder', 'Leave blank for local / no-auth (shared with Summarize + AgentMode)');
+            $('#VectTauri_vllm_api_key').attr('placeholder', 'Leave blank for local / no-auth (Embedding key)');
         }
     };
     updateVllmKeyDisplay();
@@ -5006,7 +5006,7 @@ function bindSettingsEvents(settings, callbacks) {
             }
             await readSecretState();
             if (errors.length === 0) {
-                toastr.success('vLLM API key saved (shared across embedding/summarize/agentic)');
+                toastr.success('vLLM API key saved for Embedding (Summarize / AgentMode have their own key)');
             } else if (errors.length === 2) {
                 toastr.error('Failed to save vLLM key to either slot — see console');
                 return;
@@ -5140,9 +5140,9 @@ function bindSettingsEvents(settings, callbacks) {
             const masked = savedKey.length > 4
                 ? '*'.repeat(Math.min(savedKey.length - 4, 8)) + savedKey.slice(-4)
                 : '*'.repeat(savedKey.length);
-            $('#VectTauri_openrouter_apikey').attr('placeholder', `Key saved: ${masked} (shared with Summarize + AgentMode)`);
+            $('#VectTauri_openrouter_apikey').attr('placeholder', `Key saved: ${masked} (Embedding key — same slot as TauriTavern)`);
         } else {
-            $('#VectTauri_openrouter_apikey').attr('placeholder', 'Paste OpenRouter key (shared with Summarize + AgentMode)');
+            $('#VectTauri_openrouter_apikey').attr('placeholder', 'Paste OpenRouter key (Embedding key)');
         }
     };
     updateOpenRouterKeyDisplay();
@@ -5164,7 +5164,7 @@ function bindSettingsEvents(settings, callbacks) {
                     return;
                 }
                 _openrouterModelCache = null;
-                toastr.success('OpenRouter API key saved (shared across embedding/summarize/agentic)');
+                toastr.success('OpenRouter API key saved for Embedding (Summarize / AgentMode have their own key)');
                 $(this).val('');
                 $(document).trigger('vecttauri:openrouter-key-changed');
             }
