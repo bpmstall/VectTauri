@@ -59,7 +59,7 @@ import {
     resolveStoryStateConfig, truncateAtLine, parseStoryStateReply, isSuspectShrink, buildStoryStateBlock,
     getStoryStateRecord, getStoryStateText, setStoryStateText, clearStoryState, undoStoryState,
     updateStoryState, onExtractionRun, runStoryStateInjection, formatMessagesForStoryState,
-    rebuildStoryState, takeBackfillChunk, estimateRebuildCalls,
+    rebuildStoryState, takeBackfillChunk, estimateRebuildCalls, onFullIngestionRun,
 } from '../core/story-state.js';
 import { STORY_STATE_PROMPT_TAG } from '../core/constants.js';
 
@@ -568,5 +568,45 @@ describe('rebuildStoryState (whole-chat backfill)', () => {
         const prompt = mocks.postChatCompletion.mock.calls[1][0].messages[0].content;
         expect(prompt).toContain('message 10');
         expect(prompt).not.toContain('message 9');
+    });
+});
+
+
+describe('onFullIngestionRun (after a manual / backfill ingestion)', () => {
+    it('builds the note from the whole chat when the chat has none', async () => {
+        reply(NOTE_A);
+        const res = await onFullIngestionRun({ uuid: 'uuid-1', messages: msgs(10), settings: BASE_SETTINGS() });
+        expect(res.status).toBe('updated');
+        expect(getStoryStateText('uuid-1')).toBe(NOTE_A);
+        expect(mocks.postChatCompletion.mock.calls[0][0].messages[0].content).toContain('message 0');
+    });
+
+    it('never overwrites an existing note (hand-written or earlier)', async () => {
+        setStoryStateText('uuid-1', NOTE_B);
+        const res = await onFullIngestionRun({ uuid: 'uuid-1', messages: msgs(10), settings: BASE_SETTINGS() });
+        expect(res).toMatchObject({ status: 'skipped', reason: 'has_note' });
+        expect(mocks.postChatCompletion).not.toHaveBeenCalled();
+        expect(getStoryStateText('uuid-1')).toBe(NOTE_B);
+    });
+
+    it('does nothing when the feature is off or the note is locked', async () => {
+        expect((await onFullIngestionRun({ uuid: 'uuid-1', messages: msgs(10), settings: BASE_SETTINGS({ story_state_enabled: false }) })).reason).toBe('off');
+        expect((await onFullIngestionRun({ uuid: 'uuid-1', messages: msgs(10), settings: BASE_SETTINGS({ story_state_locked: true }) })).reason).toBe('locked');
+        expect(mocks.postChatCompletion).not.toHaveBeenCalled();
+    });
+
+    it('ignores empty messages and survives a failing LLM (returns failed, never throws)', async () => {
+        mocks.postChatCompletion.mockRejectedValueOnce(new mocks.LlmCallError('boom', { kind: 'http' }));
+        const res = await onFullIngestionRun({
+            uuid: 'uuid-1', messages: [...msgs(4), { mes: '' }, { mes: '   ' }], settings: BASE_SETTINGS(),
+        });
+        expect(res.status).toBe('failed');
+        expect(getStoryStateText('uuid-1')).toBe('');
+    });
+
+    it('an empty chat is a no-op, not an error', async () => {
+        const res = await onFullIngestionRun({ uuid: 'uuid-1', messages: [], settings: BASE_SETTINGS() });
+        expect(res.status).toBe('skipped');
+        expect(mocks.postChatCompletion).not.toHaveBeenCalled();
     });
 });

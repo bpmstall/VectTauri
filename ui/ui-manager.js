@@ -1324,7 +1324,7 @@ export function renderSettings(containerId, settings, callbacks) {
                                     <input type="checkbox" id="VectTauri_story_state_enabled" />
                                     <span>Track the current story state</span>
                                 </label>
-                                <small class="VectTauri_hint">One short "current situation" note per chat (where/when, who is present, the player character's premise, relationships, items, open threads) that is injected on EVERY turn, so long-term facts are never forgotten. It is updated automatically from new messages after EventBase extraction. On by default: each update costs one extra LLM call (same model as EventBase), once every few extraction windows. A note starts empty and only learns from the newest messages — after turning this on for an existing chat, or after a full re-vectorize, press "Rebuild from whole chat".</small>
+                                <small class="VectTauri_hint">One short "current situation" note per chat (where/when, who is present, the player character's premise, relationships, items, open threads) that is injected on EVERY turn, so long-term facts are never forgotten. It is updated automatically from new messages after EventBase extraction. On by default: each update costs one extra LLM call (same model as EventBase), once every few extraction windows. A full Vectorize Content run builds the note automatically when the chat has none yet. For a chat you already vectorized, or to start over, press "Rebuild from whole chat".</small>
                             </div>
 
                             <div id="VectTauri_story_state_options">

@@ -630,6 +630,38 @@ export async function onExtractionRun({ uuid, messages, boundary, windowsProcess
     }
 }
 
+/**
+ * Hook for a finished manual / backfill ingestion (Vectorize Content, Resume): it
+ * has just read the whole chat, so build the note too instead of leaving the user to
+ * press "Rebuild" separately. Deliberately conservative — it only runs when the chat
+ * has NO note yet, so a note the user wrote or edited is never overwritten.
+ * Never throws.
+ *
+ * @param {object} params
+ * @param {string} params.uuid
+ * @param {object[]} params.messages  the chat messages the ingestion covered
+ * @param {object} params.settings
+ * @param {(done: number, total: number) => void} [params.onProgress]
+ * @returns {Promise<StoryStateResult>}
+ */
+export async function onFullIngestionRun({ uuid, messages, settings, onProgress }) {
+    try {
+        const cfg = resolveStoryStateConfig(settings);
+        if (!cfg.enabled || !isVectTauriEnabled(settings) || !uuid) {
+            return { status: 'skipped', reason: 'off', message: '' };
+        }
+        if (cfg.locked) return { status: 'skipped', reason: 'locked', message: '' };
+        if (getStoryStateRecord(uuid).text.trim()) {
+            return { status: 'skipped', reason: 'has_note', message: '' };
+        }
+        const readable = (Array.isArray(messages) ? messages : []).filter(m => m?.mes && String(m.mes).trim());
+        return await rebuildStoryState({ uuid, messages: readable, settings, onProgress });
+    } catch (err) {
+        log.warn('[StoryState] post-ingestion rebuild failed (non-fatal):', err);
+        return { status: 'failed', reason: 'error', message: String(err?.message || err) };
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Injection
 // ---------------------------------------------------------------------------

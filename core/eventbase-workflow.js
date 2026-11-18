@@ -1054,6 +1054,22 @@ export async function runEventBaseIngestion({ messages, chatUUID, settings: rawS
         }
     }
 
+    // Story State after a MANUAL / backfill run: that run just read the whole chat, so
+    // build the note now (only when the chat has none yet — a hand-written note is never
+    // overwritten). Aborted runs returned earlier, so this is a run that finished.
+    if (!isAutoSync && windowsProcessed > 0 && settings.story_state_enabled === true) {
+        try {
+            const { onFullIngestionRun } = await import('./story-state.js');
+            const result = await onFullIngestionRun({ uuid, messages, settings });
+            if (result.status === 'updated') toastr.success(result.message, 'VectTauri Story State');
+            else if (result.status === 'failed') {
+                toastr.warning(`${result.message} You can retry with "Rebuild from whole chat" in the EventBase tab.`, 'VectTauri Story State', { timeOut: 12000 });
+            }
+        } catch (err) {
+            log.warn('[EventBase] Story State rebuild after ingestion failed (non-fatal):', err?.message || err);
+        }
+    }
+
     return { eventsExtracted, windowsProcessed, windowsSkipped, windowsTimedOut, windowsFailed };
 }
 
