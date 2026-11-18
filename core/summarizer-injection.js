@@ -26,6 +26,7 @@ import { resolveActiveEventBaseCollection, getVectorizationTip } from './eventba
 import { SUMMARIZER_PROMPT_TAG } from './constants.js';
 import { isVectTauriEnabled } from './feature-gate.js';
 import { log } from './log.js';
+import { storyNowForBlock, relativeStoryTimeLabel } from './story-time.js';
 
 /**
  * Resolve recent events, format them, and inject (or clear) the summarizer slot.
@@ -309,7 +310,7 @@ export async function buildSummarizerInjection(settings) {
 
     const fullDetail = settings.summarizer_injection_full_detail !== false; // default on
     const maxChars = Number.isFinite(settings.summarizer_injection_max_chars) ? settings.summarizer_injection_max_chars : 10000;
-    const { text, count } = _format(events, fullDetail, maxChars);
+    const { text, count } = _format(events, fullDetail, maxChars, settings.eventbase_relative_time !== false);
     if (count < events.length) {
         log.domain('injection', 'trace', `[Summarizer] Char budget (${maxChars}) trimmed ${events.length - count} oldest of ${events.length} events`);
     }
@@ -326,7 +327,9 @@ export async function buildSummarizerInjection(settings) {
  * @param {boolean} [fullDetail=false]
  * @returns {string}
  */
-function _format(events, fullDetail = false, maxChars = 0) {
+function _format(events, fullDetail = false, maxChars = 0, relativeTime = false) {
+    // Story-now = newest parseable DateTime among these events (relative labels only).
+    const storyNow = relativeTime ? storyNowForBlock(events.map(e => e.metadata?.DateTime)) : null;
     // Recency rank by DISTINCT source_window_end (events is newest-first). A turn /
     // window can yield multiple events (Max Events per Window), all sharing one
     // source_window_end — they must share one label ("latest turn"), not be split
@@ -352,7 +355,7 @@ function _format(events, fullDetail = false, maxChars = 0) {
         const label = r === 1 ? 'latest turn' : `${r} turns ago`;
         const blockLines = [`(${label}) ${summary}`];
         if (fullDetail) {
-            for (const d of _detailLines(evt.metadata || {})) blockLines.push(`  ${d}`);
+            for (const d of _detailLines(evt.metadata || {}, storyNow)) blockLines.push(`  ${d}`);
         }
         const block = blockLines.join('\n');
         if (maxChars > 0 && blocksNewestFirst.length > 0 && used + 1 + block.length > maxChars) break;
@@ -371,7 +374,7 @@ function _format(events, fullDetail = false, maxChars = 0) {
  * @param {object} meta
  * @returns {string[]}
  */
-function _detailLines(meta) {
+function _detailLines(meta, storyNow = null) {
     const out = [];
     const arr = (v) => (Array.isArray(v) ? v.filter(x => x != null && String(x).trim() !== '') : []);
     const str = (v) => (typeof v === 'string' ? v.trim() : '');
@@ -381,7 +384,12 @@ function _detailLines(meta) {
     if (arr(meta.characters).length) out.push(`Characters: ${arr(meta.characters).join(', ')}`);
     if (arr(meta.locations).length) out.push(`Locations: ${arr(meta.locations).join(', ')}`);
     if (arr(meta.items).length) out.push(`Items: ${arr(meta.items).join(', ')}`);
-    if (str(meta.DateTime)) out.push(`When: ${str(meta.DateTime)}`);
+    if (str(meta.DateTime)) {
+        const ago = relativeStoryTimeLabel(str(meta.DateTime), storyNow);
+        // Anchor is the newest dated event shown, so say so.
+        const rel = !ago ? '' : ago === 'same day' ? ' (same day as the latest event)' : ` (${ago} than the latest event)`;
+        out.push(`When: ${str(meta.DateTime)}${rel}`);
+    }
     if (str(meta.scene_time)) out.push(`Scene time: ${str(meta.scene_time)}`);
     // Real-world send-time fallback: surface ONLY when no in-story date/time was
     // captured, so the event still carries a temporal anchor without injecting the
