@@ -1244,7 +1244,7 @@ export function renderSettings(containerId, settings, callbacks) {
                             </div>
 
                             <div class="vecttauri-form-group">
-                                <label class="vecttauri-label">Max Events per Window <span id="VectTauri_eventbase_max_events_per_window_val">3</span></label>
+                                <label class="vecttauri-label">Max Events per Window <span id="VectTauri_eventbase_max_events_per_window_val">5</span></label>
                                 <input type="range" id="VectTauri_eventbase_max_events_per_window" min="1" max="10" step="1" class="vecttauri-slider" />
                                 <small class="VectTauri_hint">Hard cap per LLM call. AI is instructed to return fewer (or zero) for filler / 日常 nichijou / non-narrative scenes.</small>
                             </div>
@@ -1290,7 +1290,7 @@ export function renderSettings(containerId, settings, callbacks) {
                             <p class="vecttauri-section-label"><strong>Retrieval</strong></p>
 
                             <div class="vecttauri-form-group">
-                                <label class="vecttauri-label">Retrieve Top-K <span id="VectTauri_eventbase_retrieval_top_k_val">10</span></label>
+                                <label class="vecttauri-label">Retrieve Top-K <span id="VectTauri_eventbase_retrieval_top_k_val">15</span></label>
                                 <input type="range" id="VectTauri_eventbase_retrieval_top_k" min="1" max="32" step="1" class="vecttauri-slider" />
                             </div>
 

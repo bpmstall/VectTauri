@@ -312,8 +312,8 @@ const defaultSettings = {
     // and qdrant+plugin users. Keyed by chat UUID. See core/eventbase-store.js.
     eventbase_vectorization_tip: {},
     eventbase_min_importance_store: 3,            // Drop events below this importance before storing
-    eventbase_max_events_per_window: 3,           // Hard cap on events returned per LLM call
-    eventbase_retrieval_top_k: 10,                // Events to retrieve per generation
+    eventbase_max_events_per_window: 5,           // Hard cap on events returned per LLM call
+    eventbase_retrieval_top_k: 15,                // Events to retrieve per generation
     eventbase_retrieval_min_importance: 1,        // Minimum importance for retrieval
     eventbase_injection_format: 'densetext',      // Injection format: 'densetext' or 'jsonarray'
     eventbase_retrieval_filters_enabled: true,
