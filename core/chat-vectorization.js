@@ -1341,8 +1341,9 @@ export async function rearrangeChat(chat, settings, type, { dryRun = false, test
         // EventBase workflow: Phase A — skipped in dryRun (EventBase has its own dry-run path).
         if (!dryRun) {
             // Story State: the always-injected "current situation" note. Independent of
-            // EventBase retrieval above (it must come out even when that finds nothing),
-            // times out or fails to load), synchronous inside, and never allowed to break generation.
+            // EventBase retrieval below (it runs FIRST, so it comes out even when that finds
+            // nothing, times out or fails to load), synchronous inside, and never allowed to
+            // break generation.
             if (settings.story_state_enabled === true) {
                 try {
                     const { runStoryStateInjection } = await import('./story-state.js');
