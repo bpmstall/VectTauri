@@ -172,6 +172,15 @@ describe('Core facts injection block', () => {
         expect(text).toContain('summary: summary_a');
     });
 
+    it.each(['densetext', 'summaryonly', 'jsonarray'])('never carries relative-time labels (%s), even with the setting on', (format) => {
+        const dated = (id, DateTime) => ({ ...ev(id), DateTime });
+        const { text } = formatCoreFactsBlock(
+            [dated('a', '2026-03-01T09:00:00Z'), dated('b', '2026-03-28T09:00:00Z')],
+            { eventbase_injection_format: format, eventbase_relative_time: true },
+        );
+        expect(text).not.toMatch(/earlier|time_ago|same day/);
+    });
+
     it('follows the jsonarray format setting', () => {
         const { text } = formatCoreFactsBlock([ev('a')], { eventbase_injection_format: 'jsonarray' });
         expect(text).toContain('"summary": "summary_a"');

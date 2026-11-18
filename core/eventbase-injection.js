@@ -90,8 +90,8 @@ function _cleanEventForInjection(event, timeAgo = '') {
  * @param {object[]} events
  * @returns {string}
  */
-function _formatAsJson(events, labels) {
-    return JSON.stringify(events.map((e, i) => _cleanEventForInjection(e, labels[i])), null, 2);
+function _formatAsJson(events, labels = []) {
+    return JSON.stringify(events.map((e, i) => _cleanEventForInjection(e, labels?.[i])), null, 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ function _stringifyList(value) {
  * @param {object[]} events
  * @returns {string}
  */
-function _formatAsDenseText(events, labels) {
+function _formatAsDenseText(events, labels = []) {
     return events.map((rawEvent, idx) => {
         const event = _cleanEventForInjection(rawEvent);
         return [
@@ -122,7 +122,7 @@ function _formatAsDenseText(events, labels) {
             `importance: ${event.importance ?? '-'}`,
             `message_order: ${event.message_order ?? '-'}`,
             `summary: ${event.summary || '-'}`,
-            `DateTime: ${event.DateTime || '-'}${labels[idx] && event.DateTime ? ` (${labels[idx]})` : ''}`,
+            `DateTime: ${event.DateTime || '-'}${labels?.[idx] && event.DateTime ? ` (${labels?.[idx]})` : ''}`,
             `scene_time: ${event.scene_time || '-'}`,
             `cause: ${event.cause || '-'}`,
             `result: ${event.result || '-'}`,
@@ -143,7 +143,7 @@ function _formatAsDenseText(events, labels) {
  * @param {object[]} events
  * @returns {string}
  */
-function _formatAsSummaryOnly(events, labels) {
+function _formatAsSummaryOnly(events, labels = []) {
     return events.map((rawEvent, idx) => {
         const event = _cleanEventForInjection(rawEvent);
         return [
@@ -151,7 +151,7 @@ function _formatAsSummaryOnly(events, labels) {
             `context_relevance_rank: ${event.context_relevance_rank || '-'}`,
             `message_order: ${event.message_order ?? '-'}`,
             `summary: ${event.summary || '-'}`,
-            `DateTime: ${event.DateTime || '-'}${labels[idx] && event.DateTime ? ` (${labels[idx]})` : ''}`,
+            `DateTime: ${event.DateTime || '-'}${labels?.[idx] && event.DateTime ? ` (${labels?.[idx]})` : ''}`,
             `scene_time: ${event.scene_time || '-'}`,
         ].join('\n');
     }).join('\n\n');
