@@ -19,6 +19,7 @@ import { parseRegistryKey } from './collection-ids.js';
 import { parseEmbedText } from './eventbase-schema.js';
 import { checkPluginAvailable } from './collection-loader.js';
 import { log } from './log.js';
+import { isInspectorEnabled, buildRetrievalTrace } from './retrieval-trace.js';
 
 // ---------------------------------------------------------------------------
 // Default re-rank weights (tuned for long-form SillyTavern RP)
@@ -94,6 +95,11 @@ function _resolveAnchorBoostAmount(settings) {
     return typeof settings.eventbase_anchor_boost === 'number'
         ? Math.max(0, Math.min(0.5, settings.eventbase_anchor_boost))
         : 0.20;
+}
+
+/** Round a score for the inspector trace; null when not a finite number. */
+function _numOrNull(v) {
+    return typeof v === 'number' && Number.isFinite(v) ? Number(v.toFixed(3)) : null;
 }
 
 /**
@@ -561,6 +567,12 @@ export async function retrieveEvents({ searchText, keywordQuery, chatLength, set
     // message, not tokenized any-of). Configurable via `eventbase_anchor_boost`.
     const anchorBoostAmount = _resolveAnchorBoostAmount(settings);
 
+    // Retrieval Inspector: per-candidate score components, keyed by the scored
+    // object. Side table only — scored objects are never annotated, so results
+    // are identical with the inspector on or off.
+    const inspectorOn = isInspectorEnabled(settings);
+    const traceComponents = inspectorOn ? new WeakMap() : null;
+
     const scored = importanceFiltered.map(meta => {
         const anchorBoost = _anchorBoostFor(meta, anchorText, anchorBoostAmount);
 
@@ -570,7 +582,10 @@ export async function retrieveEvents({ searchText, keywordQuery, chatLength, set
             // client-side anchor boost on top — same additive shape as the JS
             // path's final line.
             const finalScore = (typeof meta.score === 'number' ? meta.score : 0) + anchorBoost;
-            return { ...meta, _finalScore: finalScore };
+            const nativeResult = { ...meta, _finalScore: finalScore };
+            // Native path: the server returns one formula score; its parts are not visible here.
+            traceComponents?.set(nativeResult, { formula: _numOrNull(meta.score), anchor: _numOrNull(anchorBoost) });
+            return nativeResult;
         }
 
         // Legacy JS scoring (Standard backend, archive events, fallback path).
@@ -591,7 +606,15 @@ export async function retrieveEvents({ searchText, keywordQuery, chatLength, set
             weights.recency * recencyBonus +
             anchorBoost;
 
-        return { ...meta, _finalScore: finalScore };
+        const jsResult = { ...meta, _finalScore: finalScore };
+        traceComponents?.set(jsResult, {
+            cosine: _numOrNull(weights.cosine * cosineScore),
+            importance: _numOrNull(weights.importance * importanceNorm),
+            persist: _numOrNull(weights.persist * persistBonus),
+            recency: _numOrNull(weights.recency * recencyBonus),
+            anchor: _numOrNull(anchorBoost),
+        });
+        return jsResult;
     });
 
     scored.sort((a, b) => b._finalScore - a._finalScore);
@@ -736,9 +759,23 @@ export async function retrieveEvents({ searchText, keywordQuery, chatLength, set
         });
     }
 
+    // Retrieval Inspector trace (never throws; null when disabled/malformed).
+    const keptSet = inspectorOn ? new Set(importanceFiltered) : null;
+    const trace = inspectorOn ? buildRetrievalTrace({
+        queryText: keywordQuery || searchText,
+        backend: activeBackend,
+        rejected: allCandidates.filter(m => !keptSet.has(m)),
+        scored,
+        deduped: dedupedEvents,
+        contextDeduped: contextDedupedEvents,
+        final: finalEvents,
+        components: traceComponents,
+    }) : null;
+
     return {
         events: finalEvents,
         debug: {
+            ...(trace ? { trace } : {}),
             dualQuery,
             keywordScoringMethod: ebSettings.keyword_scoring_method,
             nativeHybridPrefer: settings.hybrid_native_prefer !== false,

@@ -317,6 +317,7 @@ const defaultSettings = {
     eventbase_retrieval_min_importance: 1,        // Minimum importance for retrieval
     eventbase_injection_format: 'densetext',      // Injection format: 'densetext' or 'jsonarray'
     eventbase_retrieval_filters_enabled: true,
+    eventbase_inspector_enabled: true,            // In-memory trace of the last retrieval for the EventBase "Last retrieval" inspector (cheap; false = skip capture)
     eventbase_autosync_popup: true,               // Show popup toast when auto-sync extraction runs
     autosync_show_progress_modal: false,          // Show progress modal popup during auto-sync (default: silent)
     chat_lock_index: {},                          // Reverse index: chatId -> [collectionId, ...] for O(1) tab lookups

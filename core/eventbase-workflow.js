@@ -27,6 +27,7 @@ import { insertEvents, isWindowAlreadyExtracted, markWindowExtracted, clearExtra
 import { getSavedHashes } from './core-vector-api.js';
 import { retrieveEvents } from './eventbase-retrieval.js';
 import { retrieveEventsWithAgent } from './agentic-retrieval.js';
+import { isInspectorEnabled, recordRetrievalTrace } from './retrieval-trace.js';
 import { formatEventsForInjectionDetailed } from './eventbase-injection.js';
 import { isCollectionEnabled, isCollectionActiveForContextAnyKey, setCollectionLock, setCollectionMeta } from './collection-metadata.js';
 import { progressTracker } from '../ui/progress-tracker.js';
@@ -1225,7 +1226,7 @@ export async function runEventBaseRetrieval({ chat, searchText, settings, chatUU
     // canonical re-ranker. Otherwise it returns the pre-search output unchanged,
     // making it a safe drop-in replacement.
     const retrieveFn = settings.agentic_retrieval_enabled ? retrieveEventsWithAgent : retrieveEvents;
-    const { events, debug } = await retrieveFn({
+    const { events, debug: fullDebug } = await retrieveFn({
         searchText: effectiveSearchText,
         keywordQuery,
         chatLength: getContext().chat?.length || chat?.length || 0,
@@ -1243,7 +1244,16 @@ export async function runEventBaseRetrieval({ chat, searchText, settings, chatUU
         skipContextDedup: isCrossChat,
     });
 
+    // The inspector trace rides on debug.trace; keep it out of the trace log dump.
+    const { trace: inspectorTrace, ...debug } = fullDebug || {};
     log.trace('[EventBase] Retrieval debug:', debug);
+
+    // Retrieval Inspector: remember this generation's retrieval for the panel.
+    // Memory only, skipped for dry runs (Query Test) and when the setting is off.
+    if (!dryRun && inspectorTrace && isInspectorEnabled(settings)) {
+        inspectorTrace.agentic = !!debug.agenticMode;
+        recordRetrievalTrace(currentChatId, inspectorTrace);
+    }
 
     if (!events?.length) {
         log.lifecycle('[EventBase] No events to inject');

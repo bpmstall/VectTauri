@@ -27,6 +27,7 @@ import { openDatabaseBrowser } from './database-browser.js';
 import { openContentVectorizer } from './content-vectorizer.js';
 import { openSearchDebugModal, openQueryTestModal, getLastSearchDebug } from './search-debug.js';
 import { openTextCleaningManager } from './text-cleaning-manager.js';
+import { openRetrievalInspector } from './retrieval-inspector.js';
 import { progressTracker } from './progress-tracker.js';
 import { resetBackendHealth } from '../backends/backend-manager.js';
 import { runNetworkStartup } from '../core/network-startup.js';
@@ -1307,6 +1308,19 @@ export function renderSettings(containerId, settings, callbacks) {
                                     <option value="summaryonly">Summary Only</option>
                                 </select>
                                 <small class="VectTauri_hint">JSONArray keeps full structured JSON. DenseText uses compact key/value blocks. Summary Only injects only summary + DateTime — minimum prompt footprint.</small>
+                            </div>
+
+                            <!-- Retrieval Inspector -->
+                            <div class="vecttauri-form-group">
+                                <button id="VectTauri_eventbase_inspector_open" class="vecttauri-action-btn vecttauri-btn-secondary" title="Explain the most recent retrieval: which events were injected, their scores, and which near-miss candidates were dropped and why.">
+                                    <i class="fa-solid fa-list-check"></i>
+                                    <span>Last retrieval</span>
+                                </button>
+                                <label class="checkbox_label" for="VectTauri_eventbase_inspector_enabled" style="margin-top: 6px;">
+                                    <input type="checkbox" id="VectTauri_eventbase_inspector_enabled" />
+                                    <span>Record last retrieval for the inspector</span>
+                                </label>
+                                <small class="VectTauri_hint">Keeps a small in-memory trace of the latest retrieval (never saved to disk). Negligible cost; turn off to skip capture entirely.</small>
                             </div>
 
                             <!-- Re-rank weights -->
@@ -4803,6 +4817,17 @@ function bindSettingsEvents(settings, callbacks) {
     _bindEventBaseRange('max_events_per_window', 'eventbase_max_events_per_window', 'max_events_per_window');
     _bindEventBaseRange('retrieval_top_k', 'eventbase_retrieval_top_k', 'retrieval_top_k');
     _bindEventBaseRange('retrieval_min_importance', 'eventbase_retrieval_min_importance', 'retrieval_min_importance');
+
+    $('#VectTauri_eventbase_inspector_enabled')
+        .prop('checked', settings.eventbase_inspector_enabled !== false)
+        .on('change', function() {
+            settings.eventbase_inspector_enabled = $(this).prop('checked');
+            Object.assign(extension_settings.vecttauri, settings);
+            saveSettingsDebounced();
+        });
+    $('#VectTauri_eventbase_inspector_open').on('click', () => {
+        openRetrievalInspector();
+    });
 
     $('#VectTauri_eventbase_injection_format')
         .val(settings.eventbase_injection_format || 'densetext')
