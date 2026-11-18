@@ -8,6 +8,30 @@
  * ============================================================================
  */
 
+import { storyNowForBlock, relativeStoryTimeLabel } from './story-time.js';
+
+// ---------------------------------------------------------------------------
+// Relative story time
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-event relative-time labels ("3 days earlier"), measured against the newest
+ * parseable DateTime in the block (needs 2+ dated events). Returns all-empty labels (output unchanged)
+ * when the setting is off, when the block mixes conversation frames (archive /
+ * cross-chat timelines are not comparable), or when no DateTime parses.
+ * @param {object[]} events
+ * @param {object} [settings]
+ * @returns {string[]} one label per event ('' = none)
+ */
+function _relativeTimeLabels(events, settings) {
+    const none = events.map(() => '');
+    if (settings?.eventbase_relative_time === false) return none;
+    if (new Set(events.map(e => e._sortFrame ?? '__default__')).size > 1) return none;
+    const now = storyNowForBlock(events.map(e => e.DateTime));
+    if (now === null) return none;
+    return events.map(e => relativeStoryTimeLabel(e.DateTime, now));
+}
+
 // ---------------------------------------------------------------------------
 // JSON format
 // ---------------------------------------------------------------------------
@@ -32,7 +56,7 @@ function _summaryFromText(text) {
  * @param {object} event
  * @returns {object}
  */
-function _cleanEventForInjection(event) {
+function _cleanEventForInjection(event, timeAgo = '') {
     return {
         event_type: event.event_type,
         // Relative retrieval-relevance rank within this injected batch (1 = closest
@@ -47,6 +71,7 @@ function _cleanEventForInjection(event) {
         summary: _summaryFromText(event.text),
         DateTime: event.DateTime || null,
         scene_time: event.scene_time || '',
+        ...(timeAgo ? { time_ago: timeAgo } : {}),
         cause: event.cause || '',
         result: event.result || '',
         characters: event.characters || [],
@@ -65,8 +90,8 @@ function _cleanEventForInjection(event) {
  * @param {object[]} events
  * @returns {string}
  */
-function _formatAsJson(events) {
-    return JSON.stringify(events.map(_cleanEventForInjection), null, 2);
+function _formatAsJson(events, labels) {
+    return JSON.stringify(events.map((e, i) => _cleanEventForInjection(e, labels[i])), null, 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +112,7 @@ function _stringifyList(value) {
  * @param {object[]} events
  * @returns {string}
  */
-function _formatAsDenseText(events) {
+function _formatAsDenseText(events, labels) {
     return events.map((rawEvent, idx) => {
         const event = _cleanEventForInjection(rawEvent);
         return [
@@ -97,7 +122,7 @@ function _formatAsDenseText(events) {
             `importance: ${event.importance ?? '-'}`,
             `message_order: ${event.message_order ?? '-'}`,
             `summary: ${event.summary || '-'}`,
-            `DateTime: ${event.DateTime || '-'}`,
+            `DateTime: ${event.DateTime || '-'}${labels[idx] && event.DateTime ? ` (${labels[idx]})` : ''}`,
             `scene_time: ${event.scene_time || '-'}`,
             `cause: ${event.cause || '-'}`,
             `result: ${event.result || '-'}`,
@@ -118,7 +143,7 @@ function _formatAsDenseText(events) {
  * @param {object[]} events
  * @returns {string}
  */
-function _formatAsSummaryOnly(events) {
+function _formatAsSummaryOnly(events, labels) {
     return events.map((rawEvent, idx) => {
         const event = _cleanEventForInjection(rawEvent);
         return [
@@ -126,7 +151,7 @@ function _formatAsSummaryOnly(events) {
             `context_relevance_rank: ${event.context_relevance_rank || '-'}`,
             `message_order: ${event.message_order ?? '-'}`,
             `summary: ${event.summary || '-'}`,
-            `DateTime: ${event.DateTime || '-'}`,
+            `DateTime: ${event.DateTime || '-'}${labels[idx] && event.DateTime ? ` (${labels[idx]})` : ''}`,
             `scene_time: ${event.scene_time || '-'}`,
         ].join('\n');
     }).join('\n\n');
@@ -147,6 +172,11 @@ const INJECTION_HEADER =
     + 'context_relevance_rank shows how closely each event matches the current moment '
     + '(1 = closest match) — this is retrieval relevance, NOT story importance '
     + '(see the separate importance field for how significant the event is).';
+
+/** Appended to the header only when at least one event carries a relative label. */
+const RELATIVE_TIME_NOTE =
+    'time_ago / "(… earlier)" is measured against the latest dated event in this block, '
+    + 'not against real-world time.';
 
 /**
  * Re-order retrieved events for presentation: chronological, oldest → newest.
@@ -237,14 +267,16 @@ export function formatEventsForInjectionDetailed(events, _settings) {
     const ordered = _orderEventsForPresentation(ranked);
 
     const format = String(_settings?.eventbase_injection_format || 'densetext').toLowerCase();
+    const labels = _relativeTimeLabels(ordered, _settings);
     const body = format === 'densetext'
-        ? _formatAsDenseText(ordered)
+        ? _formatAsDenseText(ordered, labels)
         : format === 'summaryonly'
-            ? _formatAsSummaryOnly(ordered)
-            : _formatAsJson(ordered);
+            ? _formatAsSummaryOnly(ordered, labels)
+            : _formatAsJson(ordered, labels);
+    const header = labels.some(Boolean) ? `${INJECTION_HEADER} ${RELATIVE_TIME_NOTE}` : INJECTION_HEADER;
 
     return {
-        text: `${INJECTION_HEADER}\n${body}`,
+        text: `${header}\n${body}`,
         includedCount: ordered.length,
         requestedCount: events.length,
     };

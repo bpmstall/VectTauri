@@ -267,3 +267,25 @@ describe('refreshWorldInfoEntryDepthCache', () => {
         warn.mockRestore();
     });
 });
+
+describe('buildSummarizerInjection — relative story time', () => {
+    const dated = () => [
+        ev(10, '[x] first', { DateTime: '2026-03-28T09:00:00.000Z' }),
+        ev(20, '[x] second', { DateTime: '2026-03-31T19:00:00.000Z' }),
+        ev(30, '[x] third', { scene_time: 'Later' }),
+    ];
+
+    it('appends relative labels to the When line (full detail)', async () => {
+        mocks.listChunks.mockResolvedValue({ items: dated() });
+        const { text } = await buildSummarizerInjection(SETTINGS({ summarizer_injection_full_detail: true }));
+        expect(text).toContain('When: 2026-03-28T09:00:00.000Z (3 days earlier than the latest event)');
+        expect(text).toContain('When: 2026-03-31T19:00:00.000Z (same day as the latest event)');
+    });
+
+    it('is unchanged when eventbase_relative_time is off', async () => {
+        mocks.listChunks.mockResolvedValue({ items: dated() });
+        const { text } = await buildSummarizerInjection(SETTINGS({ summarizer_injection_full_detail: true, eventbase_relative_time: false }));
+        expect(text).toContain('When: 2026-03-28T09:00:00.000Z\n');
+        expect(text).not.toContain('earlier');
+    });
+});

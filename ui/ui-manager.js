@@ -1336,6 +1336,11 @@ export function renderSettings(containerId, settings, callbacks) {
                                 </label>
                                 <small class="VectTauri_hint">Keeps a small in-memory trace of the latest retrieval (never saved to disk). Negligible cost; turn off to skip capture entirely.</small>
                             </div>
+                            <label class="checkbox_label" for="VectTauri_eventbase_relative_time">
+                                <input type="checkbox" id="VectTauri_eventbase_relative_time" />
+                                <span>Relative time hints</span>
+                            </label>
+                            <small class="VectTauri_hint">Adds "(3 days earlier)" next to each event's DateTime, measured against the latest dated event injected. Skipped when a date is missing or unparseable.</small>
 
                             <!-- Re-rank weights -->
                             <p style="margin: 12px 0 4px; font-size:0.85em; font-weight:600;">Re-rank Weights</p>
@@ -4856,6 +4861,14 @@ function bindSettingsEvents(settings, callbacks) {
         .val(settings.eventbase_injection_format || 'densetext')
         .on('change', function() {
             settings.eventbase_injection_format = String($(this).val() || 'densetext').toLowerCase();
+            Object.assign(extension_settings.vecttauri, settings);
+            saveSettingsDebounced();
+        });
+
+    $('#VectTauri_eventbase_relative_time')
+        .prop('checked', settings.eventbase_relative_time !== false)
+        .on('change', function() {
+            settings.eventbase_relative_time = $(this).prop('checked');
             Object.assign(extension_settings.vecttauri, settings);
             saveSettingsDebounced();
         });

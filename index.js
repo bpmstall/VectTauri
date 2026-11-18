@@ -318,6 +318,7 @@ const defaultSettings = {
     eventbase_injection_format: 'densetext',      // Injection format: 'densetext' or 'jsonarray'
     eventbase_core_facts_max: 8,                  // Max pinned "core fact" events always injected (0 = off, 0-30). Pins are set in the Database Browser.
     eventbase_core_facts_auto: false,             // Auto-pin newly extracted events with importance >= 8 AND should_persist === true
+    eventbase_relative_time: true,                // Append "(3 days earlier)" labels to injected events (vs latest dated event)
     eventbase_retrieval_filters_enabled: true,
     eventbase_inspector_enabled: true,            // In-memory trace of the last retrieval for the EventBase "Last retrieval" inspector (cheap; false = skip capture)
     eventbase_autosync_popup: true,               // Show popup toast when auto-sync extraction runs
