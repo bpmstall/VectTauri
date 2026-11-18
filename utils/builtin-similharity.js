@@ -152,6 +152,11 @@ async function nativeVector(endpoint, body) {
     }
 }
 
+// Sources embedded client-side by the extension itself (core/embeddings-openai.js).
+// Their base URL is unknown to the native store, so the native store cannot
+// (re-)embed their text; the vector persisted in the shim store is the only copy.
+const CLIENT_SIDE_SOURCES = ['electronhub', 'custom'];
+
 // ---------------------------------------------------------------------------
 // Endpoint implementations
 // ---------------------------------------------------------------------------
@@ -169,11 +174,9 @@ async function handleInsert(body) {
     }
 
     try {
-        // Sources embedded client-side by the extension itself (core/embeddings-openai.js).
-        // Their base URL is unknown to the native store, so a native insert would
-        // fail — the vector persisted below is the only copy, and handleQuery
-        // scores it client-side with cosine.
-        const CLIENT_SIDE_SOURCES = ['electronhub', 'custom'];
+        // Client-side sources: a native insert would fail (see CLIENT_SIDE_SOURCES) —
+        // the vector persisted below is the only copy, and handleQuery scores it
+        // client-side with cosine.
         const skipNativeInsert = CLIENT_SIDE_SOURCES.includes(source);
 
         if (!skipNativeInsert) {
@@ -215,7 +218,11 @@ async function handleInsert(body) {
  * Consumers accept {items|chunks|results: [...]}.
  */
 async function handleList(body) {
-    const { offset = 0, limit = 100, includeVectors = false } = body ?? {};
+    // Plugin parity: limit 0 / absent means "everything"; the response carries
+    // offset/limit/hasMore so a paginating caller can tell when it is done.
+    const { includeVectors = false } = body ?? {};
+    const offset = Math.max(0, Number(body?.offset) || 0);
+    const limit = Math.max(0, Number(body?.limit) || 0);
     const collectionId = bareCollectionId(body?.collectionId);
     if (!collectionId) return fail(400, 'chunks/list: collectionId is required');
 
@@ -223,7 +230,7 @@ async function handleList(body) {
         const ns = chunkNamespace(collectionId);
         const keys = await storeListKeys(ns);
         const sorted = keys.slice().sort();
-        const page = sorted.slice(offset, offset + limit);
+        const page = limit > 0 ? sorted.slice(offset, offset + limit) : sorted.slice(offset);
 
         const items = [];
         for (const hash of page) {
@@ -237,7 +244,14 @@ async function handleList(body) {
                 metadata: rec.metadata ?? {},
             });
         }
-        return ok({ success: true, total: sorted.length, items });
+        return ok({
+            success: true,
+            total: sorted.length,
+            offset,
+            limit,
+            hasMore: limit > 0 && offset + limit < sorted.length,
+            items,
+        });
     } catch (e) {
         return fail(500, e.message);
     }
@@ -288,6 +302,11 @@ async function handleQuery(body) {
         }
 
         let results = [];
+        // True when at least one hit got a rank-derived score instead of a real cosine.
+        // TauriTavern's /api/vector/query computes cosine internally but returns only
+        // hashes + metadata, so today every native-path score is synthetic: the ORDER
+        // and the threshold cut are real, the score magnitudes are not.
+        let usedSyntheticScores = false;
 
         if (Array.isArray(queryVector) && queryVector.length > 0) {
             // Fully client-side dense scoring.
@@ -322,6 +341,7 @@ async function handleQuery(body) {
                 ? native
                 : (native?.hashes ?? native?.results ?? []);
             const nativeMeta = Array.isArray(native?.metadata) ? native.metadata : [];
+            const nativeScores = Array.isArray(native?.scores) ? native.scores : null;
             // Store keys are strings while native hashes are numbers — normalize both
             // so the lookup cannot silently miss on a number-vs-string mismatch.
             const byHash = new Map(records.map(r => [String(r.hash), r]));
@@ -334,7 +354,13 @@ async function handleQuery(body) {
                 // Native results are already threshold-filtered and ordered by
                 // similarity (desc). /api/vector/query does not expose scores, so
                 // synthesize a monotonic ramp that preserves that ordering.
-                const explicitScore = isObject && typeof raw.score === 'number' ? raw.score : null;
+                // If a future TauriTavern returns real scores (`scores: [...]` parallel to
+                // `hashes`, or `score` on each hit) they are used as-is — see
+                // nativeScoresAvailable below.
+                const explicitScore = isObject && typeof raw.score === 'number'
+                    ? raw.score
+                    : (typeof nativeScores?.[i] === 'number' ? nativeScores[i] : null);
+                if (explicitScore === null) usedSyntheticScores = true;
                 const score = explicitScore !== null
                     ? explicitScore
                     : 1 - (i / Math.max(nativeHashes.length, 1)) * 0.5;
@@ -361,7 +387,7 @@ async function handleQuery(body) {
         }
 
         results = results.slice(0, topK);
-        return ok({ success: true, count: results.length, results });
+        return ok({ success: true, count: results.length, scoresSynthetic: usedSyntheticScores, results });
     } catch (e) {
         log.error(`[builtin] query failed for ${collectionId}: ${e.message}`);
         return fail(500, e.message);
@@ -448,20 +474,41 @@ async function handleStats(body) {
     try {
         const ns = chunkNamespace(collectionId);
         const keys = await storeListKeys(ns);
-        let totalSize = 0;
+        let totalChars = 0;
+        let dimensions = 0;
+        const messages = new Set();
         for (const hash of keys) {
             const rec = await storeGetJson(ns, hash);
-            if (rec?.text) totalSize += rec.text.length;
+            if (!rec) continue;
+            totalChars += (rec.text || '').length;
+            if (!dimensions && Array.isArray(rec.vector)) dimensions = rec.vector.length;
+            const origin = rec.metadata?.originalMessageHash;
+            if (origin !== undefined && origin !== null) messages.add(String(origin));
         }
         const reg = await getRegistryEntry(collectionId);
+        const source = reg?.source ?? 'transformers';
         return ok({
             success: true,
+            backend: 'vectra',
+            collectionId,
             stats: {
                 collectionId,
                 chunkCount: keys.length,
-                totalSize,
+                // Plugin-shaped fields. totalTokens is the same rough chars/4 estimate
+                // the plugin uses. embeddingDimensions is only known when the vector
+                // is kept here (client-side sources); native vectors are not readable.
+                totalCharacters: totalChars,
+                totalTokens: Math.ceil(totalChars / 4),
+                avgChunkSize: keys.length ? Math.round(totalChars / keys.length) : 0,
+                embeddingDimensions: dimensions,
+                messageCount: messages.size,
+                sources: keys.length ? { [source]: keys.length } : {},
+                storageSize: 0,
+                backend: 'vectra',
+                // Legacy builtin fields — kept for existing consumers.
+                totalSize: totalChars,
                 model: reg?.model ?? null,
-                source: reg?.source ?? 'transformers',
+                source,
                 exists: keys.length > 0,
             },
         });
@@ -538,6 +585,141 @@ async function handleGetEmbedding() {
 }
 
 // ---------------------------------------------------------------------------
+// Per-chunk routes: GET /chunks/:hash, PATCH /chunks/:hash/text, PATCH /chunks/:hash/metadata
+// ---------------------------------------------------------------------------
+
+// Hashes are integers (possibly negative); matching only those keeps the fixed
+// routes (/chunks/insert, /chunks/list, ...) from ever being read as a hash.
+const CHUNK_ROUTE_RE = /^\/api\/plugins\/similharity\/chunks\/(-?\d+)(\/text|\/metadata)?(?:\?(.*))?$/;
+
+// A text edit changes the hash (it is the hash OF the text). Callers such as the
+// chunk visualizer save text and then metadata in one pass using the OLD hash, so
+// remember old -> new for a short while and resolve it, instead of 404-ing the
+// metadata write that follows a successful text write.
+const HASH_ALIAS_TTL_MS = 60_000;
+const _hashAliases = new Map();
+
+function _aliasKey(collectionId, hash) {
+    return `${collectionId}::${hash}`;
+}
+
+/** Finds a stored chunk by hash, following a recent text-edit alias. */
+async function loadChunk(collectionId, hash) {
+    const ns = chunkNamespace(collectionId);
+    const direct = await storeGetJson(ns, String(hash));
+    if (direct) return { rec: direct, hash: String(hash) };
+
+    const alias = _hashAliases.get(_aliasKey(collectionId, hash));
+    if (alias && Date.now() - alias.ts <= HASH_ALIAS_TTL_MS) {
+        const moved = await storeGetJson(ns, String(alias.newHash));
+        if (moved) return { rec: moved, hash: String(alias.newHash) };
+    }
+    return null;
+}
+
+/** GET /chunks/:hash?collectionId=… → { success, chunk } */
+async function handleGetChunk(hash, query) {
+    const collectionId = bareCollectionId(new URLSearchParams(query || '').get('collectionId'));
+    if (!collectionId) return fail(400, 'chunks/:hash: collectionId is required');
+    try {
+        const found = await loadChunk(collectionId, hash);
+        if (!found) return fail(404, 'Chunk not found');
+        const { rec } = found;
+        return ok({
+            success: true,
+            chunk: {
+                hash: rec.hash ?? found.hash,
+                text: rec.text ?? '',
+                index: rec.index ?? 0,
+                metadata: rec.metadata ?? {},
+            },
+        });
+    } catch (e) {
+        return fail(500, e.message);
+    }
+}
+
+/**
+ * PATCH /chunks/:hash/metadata — shallow-merge metadata, no re-embedding.
+ * `hash` and `text` belong to the chunk itself and are never overwritten.
+ */
+async function handlePatchMetadata(hash, body) {
+    const collectionId = bareCollectionId(body?.collectionId);
+    const patch = body?.metadata;
+    if (!collectionId || !patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        return fail(400, 'chunks/:hash/metadata: collectionId and metadata{} are required');
+    }
+    try {
+        const found = await loadChunk(collectionId, hash);
+        if (!found) return fail(404, 'Chunk not found');
+        const incoming = { ...patch };
+        delete incoming.hash;
+        delete incoming.text;
+        const merged = { ...(found.rec.metadata ?? {}), ...incoming };
+        await storeSetJson(chunkNamespace(collectionId), found.hash, { ...found.rec, metadata: merged });
+        return ok({ success: true, backend: 'vectra', hash: found.hash, metadata: merged });
+    } catch (e) {
+        return fail(500, e.message);
+    }
+}
+
+/**
+ * PATCH /chunks/:hash/text — replace the text and re-embed.
+ * The new hash is the hash of the new text (clients must follow `newHash`).
+ * The new point is written BEFORE the old one is removed, so a failure midway
+ * leaves a duplicate rather than losing the chunk.
+ */
+async function handlePatchText(hash, body) {
+    const collectionId = bareCollectionId(body?.collectionId);
+    const text = typeof body?.text === 'string' ? body.text : '';
+    if (!collectionId || !text.trim()) {
+        return fail(400, 'chunks/:hash/text: collectionId and non-empty text are required');
+    }
+    if (CLIENT_SIDE_SOURCES.includes(body?.source)) {
+        // The native store cannot embed these sources, and this route has no way to
+        // receive a vector. Fail clearly instead of writing a chunk with no vector.
+        return fail(501, `chunks/:hash/text: re-embedding is not supported for source "${body.source}" in builtin mode — delete and re-insert the chunk instead`);
+    }
+    try {
+        const found = await loadChunk(collectionId, hash);
+        if (!found) return fail(404, 'Chunk not found');
+        const { rec } = found;
+        const oldHash = rec.hash ?? found.hash;
+        // Loaded lazily: the host's own hash must match what the extension computes for
+        // new chunks, and a static import would pull SillyTavern's utils into every
+        // module that merely loads this shim.
+        const { getStringHash } = await import('../../../../utils.js');
+        const newHash = getStringHash(text);
+        if (String(newHash) === String(oldHash)) {
+            return ok({ success: true, backend: 'vectra', oldHash, newHash, text });
+        }
+
+        const ns = chunkNamespace(collectionId);
+        const index = rec.index ?? 0;
+        await nativeVector('insert', {
+            ...nativeBody(body),
+            collectionId,
+            items: [{ hash: newHash, text, index }],
+        });
+        // The stored vector (if any) belonged to the old text — drop it.
+        await storeSetJson(ns, newHash, { hash: newHash, text, index, metadata: rec.metadata ?? {} });
+        await nativeVector('delete', {
+            collectionId,
+            source: body?.source || 'transformers',
+            model: body?.model,
+            hashes: [oldHash],
+        });
+        await storeDeleteJson(ns, found.hash);
+
+        _hashAliases.set(_aliasKey(collectionId, hash), { newHash, ts: Date.now() });
+        return ok({ success: true, backend: 'vectra', oldHash, newHash, text });
+    } catch (e) {
+        log.error(`[builtin] chunk text update failed for ${collectionId}: ${e.message}`);
+        return fail(500, e.message);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -563,6 +745,7 @@ export function isBuiltinRoute(path) {
     if (typeof path !== 'string') return false;
     if (path === '/api/plugins/similharity/health') return true;
     if (path === '/api/plugins/similharity/collections') return true;
+    if (CHUNK_ROUTE_RE.test(path)) return true;
     return POST_ROUTES.some(r => r.match(path));
 }
 
@@ -579,12 +762,31 @@ export async function builtinFetch(path, init) {
             status: 'ok',
             plugin: 'similharity-builtin',
             version: BUILTIN_PLUGIN_VERSION,
-            features: ['builtin-metadata', 'native-vector', 'collection-browser'],
+            features: ['builtin-metadata', 'native-vector', 'collection-browser', 'chunk-edit'],
         });
     }
 
     if (path === '/api/plugins/similharity/collections') {
         return handleCollections();
+    }
+
+    const chunkRoute = CHUNK_ROUTE_RE.exec(path);
+    if (chunkRoute) {
+        const [, hash, suffix, query] = chunkRoute;
+        const method = String(init?.method || 'GET').toUpperCase();
+        if (!suffix && method === 'GET') return handleGetChunk(hash, query);
+
+        let patchBody = {};
+        if (init?.body) {
+            try {
+                patchBody = typeof init.body === 'string' ? JSON.parse(init.body) : init.body;
+            } catch {
+                return fail(400, 'invalid JSON body');
+            }
+        }
+        if (suffix === '/metadata' && method === 'PATCH') return handlePatchMetadata(hash, patchBody);
+        if (suffix === '/text' && method === 'PATCH') return handlePatchText(hash, patchBody);
+        return fail(405, `builtin shim: ${method} not supported for ${path}`);
     }
 
     let body = {};

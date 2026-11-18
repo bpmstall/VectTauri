@@ -6,7 +6,7 @@
  * through builtinFetch() with the settings fallback store (no TauriTavern).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock host modules before importing the shim
 vi.mock('../../../../../script.js', () => ({
@@ -20,6 +20,11 @@ vi.mock('../../../../extensions.js', () => ({
     extension_settings: {
         vecttauri: {},
     },
+}));
+
+// Deterministic stand-in for ST's getStringHash (loaded lazily by PATCH /text).
+vi.mock('../../../../utils.js', () => ({
+    getStringHash: (str) => String(str).split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 1000003, 7),
 }));
 
 import { builtinFetch, isBuiltinRoute, BUILTIN_PLUGIN_VERSION } from '../utils/builtin-similharity.js';
@@ -520,5 +525,220 @@ describe('builtin shim hybrid keyword boost', () => {
         } finally {
             globalThis.fetch = realFetch;
         }
+    });
+});
+
+
+describe('builtin shim per-chunk routes (plugin parity)', () => {
+    const COL = 'similharity_chunkroutes';
+    let nativeCalls;
+    let realFetch;
+
+    const patch = (path, body) => builtinFetch(path, { method: 'PATCH', body: JSON.stringify(body) });
+    const get = (path) => builtinFetch(path, { method: 'GET' });
+
+    beforeEach(async () => {
+        resetBuiltinStoreProbe();
+        nativeCalls = [];
+        realFetch = globalThis.fetch;
+        globalThis.fetch = async (url, init) => {
+            nativeCalls.push({ url: String(url), body: init?.body ? JSON.parse(init.body) : null });
+            return { ok: true, status: 200, json: async () => ({}), text: async () => '' };
+        };
+        await post(`${H}/chunks/purge`, { collectionId: COL });
+        await post(`${H}/chunks/insert`, {
+            collectionId: COL, source: 'transformers', model: 'm',
+            items: [{ hash: 111, text: 'alpha', index: 3, metadata: { keywords: ['a'], enabled: true } }],
+        });
+        nativeCalls = [];
+    });
+
+    afterEach(() => { globalThis.fetch = realFetch; });
+
+    it('recognizes the dynamic chunk paths, but not the fixed routes, as hash routes', () => {
+        expect(isBuiltinRoute(`${H}/chunks/111`)).toBe(true);
+        expect(isBuiltinRoute(`${H}/chunks/-42/text`)).toBe(true);
+        expect(isBuiltinRoute(`${H}/chunks/111/metadata`)).toBe(true);
+        expect(isBuiltinRoute(`${H}/chunks/111?collectionId=x`)).toBe(true);
+        expect(isBuiltinRoute(`${H}/chunks/nope`)).toBe(false);
+    });
+
+    it('GET /chunks/:hash returns the chunk, 404 when missing, 400 without collectionId', async () => {
+        const hit = await get(`${H}/chunks/111?collectionId=${COL}&backend=vectra`);
+        const data = await hit.json();
+        expect(data.success).toBe(true);
+        expect(data.chunk).toMatchObject({ hash: 111, text: 'alpha', index: 3 });
+        expect(data.chunk.metadata.keywords).toEqual(['a']);
+
+        expect((await get(`${H}/chunks/999?collectionId=${COL}`)).status).toBe(404);
+        expect((await get(`${H}/chunks/111`)).status).toBe(400);
+    });
+
+    it('PATCH metadata merges, protects hash/text, and makes no native call', async () => {
+        const r = await patch(`${H}/chunks/111/metadata`, {
+            collectionId: COL, metadata: { keywords: ['a', 'b'], hash: 5, text: 'evil', name: 'N' },
+        });
+        const data = await r.json();
+        expect(data.success).toBe(true);
+        expect(data.metadata).toEqual({ keywords: ['a', 'b'], enabled: true, name: 'N' });
+
+        const chunk = (await (await get(`${H}/chunks/111?collectionId=${COL}`)).json()).chunk;
+        expect(chunk.text).toBe('alpha');
+        expect(chunk.hash).toBe(111);
+        expect(chunk.metadata.enabled).toBe(true);
+        expect(nativeCalls).toHaveLength(0);
+    });
+
+    it('PATCH metadata validates input and reports unknown chunks', async () => {
+        expect((await patch(`${H}/chunks/111/metadata`, { collectionId: COL })).status).toBe(400);
+        expect((await patch(`${H}/chunks/999/metadata`, { collectionId: COL, metadata: { a: 1 } })).status).toBe(404);
+    });
+
+    it('PATCH text re-embeds via the native store: inserts the new hash, deletes the old, keeps metadata', async () => {
+        const r = await patch(`${H}/chunks/111/text`, { collectionId: COL, text: 'beta', source: 'transformers', model: 'm' });
+        const data = await r.json();
+        expect(data.success).toBe(true);
+        expect(data.oldHash).toBe(111);
+        expect(data.newHash).not.toBe(111);
+        expect(data.text).toBe('beta');
+
+        const calls = nativeCalls.map(c => c.url.replace(/^.*\/api\/vector\//, ''));
+        // New point is written BEFORE the old one is removed.
+        expect(calls).toEqual(['insert', 'delete']);
+        expect(nativeCalls[0].body.items).toEqual([{ hash: data.newHash, text: 'beta', index: 3 }]);
+        expect(nativeCalls[1].body.hashes).toEqual([111]);
+
+        expect((await get(`${H}/chunks/111?collectionId=${COL}`)).status).toBe(200); // via alias
+        const moved = (await (await get(`${H}/chunks/${data.newHash}?collectionId=${COL}`)).json()).chunk;
+        expect(moved.text).toBe('beta');
+        expect(moved.metadata.keywords).toEqual(['a']);
+    });
+
+    it('a metadata write using the OLD hash right after a text edit still lands (saveAllChanges order)', async () => {
+        const t = await (await patch(`${H}/chunks/111/text`, { collectionId: COL, text: 'gamma', source: 'transformers' })).json();
+        const m = await patch(`${H}/chunks/111/metadata`, { collectionId: COL, metadata: { enabled: false } });
+        expect(m.ok).toBe(true);
+        const moved = (await (await get(`${H}/chunks/${t.newHash}?collectionId=${COL}`)).json()).chunk;
+        expect(moved.metadata.enabled).toBe(false);
+    });
+
+    it('PATCH text refuses client-embedded sources instead of writing a vector-less chunk', async () => {
+        const r = await patch(`${H}/chunks/111/text`, { collectionId: COL, text: 'delta', source: 'custom' });
+        expect(r.status).toBe(501);
+        expect(nativeCalls).toHaveLength(0);
+        expect((await (await get(`${H}/chunks/111?collectionId=${COL}`)).json()).chunk.text).toBe('alpha');
+    });
+
+    it('PATCH text with text that hashes to the same value makes no native call', async () => {
+        const { getStringHash } = await import('../../../../utils.js');
+        const sameHash = getStringHash('same text');
+        await post(`${H}/chunks/insert`, {
+            collectionId: COL, source: 'transformers', model: 'm',
+            items: [{ hash: sameHash, text: 'same text', index: 0 }],
+        });
+        nativeCalls = [];
+        const r = await (await patch(`${H}/chunks/${sameHash}/text`, { collectionId: COL, text: 'same text', source: 'transformers' })).json();
+        expect(r.success).toBe(true);
+        expect(r.newHash).toBe(r.oldHash);
+        expect(nativeCalls).toHaveLength(0);
+    });
+
+    it('rejects unsupported methods on chunk paths', async () => {
+        expect((await builtinFetch(`${H}/chunks/111/text`, { method: 'GET' })).status).toBe(405);
+        expect((await builtinFetch(`${H}/chunks/111`, { method: 'DELETE' })).status).toBe(405);
+    });
+});
+
+describe('builtin shim list / stats parity with the plugin', () => {
+    const COL = 'similharity_paritystats';
+    let realFetch;
+    beforeEach(async () => {
+        resetBuiltinStoreProbe();
+        realFetch = globalThis.fetch;
+        globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '' });
+        await post(`${H}/chunks/purge`, { collectionId: COL });
+        await post(`${H}/chunks/insert`, {
+            collectionId: COL, source: 'transformers', model: 'm',
+            items: [
+                { hash: 1, text: 'abcd', index: 0, vector: [1, 0, 0], metadata: { originalMessageHash: 'x' } },
+                { hash: 2, text: 'abcdefgh', index: 1, metadata: { originalMessageHash: 'x' } },
+                { hash: 3, text: 'abcd', index: 2, metadata: { originalMessageHash: 'y' } },
+            ],
+        });
+    });
+    afterEach(() => { globalThis.fetch = realFetch; });
+
+    it('list: limit 0/absent returns everything; paging reports offset/limit/hasMore', async () => {
+        const all = await (await post(`${H}/chunks/list`, { collectionId: COL })).json();
+        expect(all.items).toHaveLength(3);
+        expect(all).toMatchObject({ total: 3, offset: 0, limit: 0, hasMore: false });
+
+        const p1 = await (await post(`${H}/chunks/list`, { collectionId: COL, offset: 0, limit: 2 })).json();
+        expect(p1).toMatchObject({ total: 3, offset: 0, limit: 2, hasMore: true });
+        const p2 = await (await post(`${H}/chunks/list`, { collectionId: COL, offset: 2, limit: 2 })).json();
+        expect(p2).toMatchObject({ offset: 2, limit: 2, hasMore: false });
+        expect(p2.items).toHaveLength(1);
+    });
+
+    it('stats: plugin-shaped fields plus the legacy builtin ones', async () => {
+        const r = await (await post(`${H}/chunks/stats`, { collectionId: COL })).json();
+        expect(r.backend).toBe('vectra');
+        expect(r.stats).toMatchObject({
+            chunkCount: 3, totalCharacters: 16, totalTokens: 4, avgChunkSize: 5,
+            embeddingDimensions: 3, messageCount: 2, storageSize: 0, backend: 'vectra',
+            sources: { transformers: 3 },
+            // legacy
+            totalSize: 16, exists: true, model: 'm', source: 'transformers',
+        });
+    });
+
+    it('stats on an empty collection is all zeros, not an error', async () => {
+        const r = await (await post(`${H}/chunks/stats`, { collectionId: 'similharity_nothing_here' })).json();
+        expect(r.stats).toMatchObject({ chunkCount: 0, totalCharacters: 0, avgChunkSize: 0, exists: false, sources: {} });
+    });
+});
+
+describe('builtin shim query score honesty', () => {
+    const COL = 'similharity_scores';
+    let realFetch;
+    beforeEach(async () => {
+        resetBuiltinStoreProbe();
+        realFetch = globalThis.fetch;
+        await post(`${H}/chunks/purge`, { collectionId: COL });
+        globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '' });
+        await post(`${H}/chunks/insert`, {
+            collectionId: COL, source: 'transformers', model: 'm',
+            items: [{ hash: 1, text: 'one', index: 0 }, { hash: 2, text: 'two', index: 1 }],
+        });
+    });
+    afterEach(() => { globalThis.fetch = realFetch; });
+
+    const nativeReturns = (payload) => {
+        globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) });
+    };
+
+    it('flags rank-derived scores as synthetic when the native store returns no scores', async () => {
+        nativeReturns({ hashes: [2, 1], metadata: [] });
+        const r = await (await post(`${H}/chunks/query`, { collectionId: COL, searchText: 'q', topK: 5 })).json();
+        expect(r.scoresSynthetic).toBe(true);
+        expect(r.results.map(x => x.hash)).toEqual([2, 1]);          // native ORDER is preserved
+        expect(r.results[0].score).toBeGreaterThan(r.results[1].score);
+    });
+
+    it('uses real scores when the native store provides them, and does not flag them', async () => {
+        nativeReturns({ hashes: [2, 1], metadata: [], scores: [0.91, 0.42] });
+        const r = await (await post(`${H}/chunks/query`, { collectionId: COL, searchText: 'q', topK: 5 })).json();
+        expect(r.scoresSynthetic).toBe(false);
+        expect(r.results.map(x => x.score)).toEqual([0.91, 0.42]);
+    });
+
+    it('client-side cosine path (stored vectors) is never flagged synthetic', async () => {
+        await post(`${H}/chunks/insert`, {
+            collectionId: COL, source: 'custom', model: 'm',
+            items: [{ hash: 7, text: 'v', index: 0, vector: [1, 0] }],
+        });
+        const r = await (await post(`${H}/chunks/query`, { collectionId: COL, queryVector: [1, 0], topK: 5 })).json();
+        expect(r.scoresSynthetic).toBe(false);
+        expect(r.results.find(x => x.hash === 7).score).toBeCloseTo(1, 5);
     });
 });
