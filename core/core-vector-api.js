@@ -63,6 +63,8 @@ import { log } from './log.js';
  * corpus-stats module load deferred to when it's actually needed.
  */
 async function _invalidateCorpusStats(collectionId, reason) {
+    // Any insert/delete/purge may change a pinned event's stored content.
+    invalidateCoreFactsCache();
     if (!collectionId) return;
     try {
         const mod = await import('./corpus-stats.js');
@@ -73,6 +75,7 @@ async function _invalidateCorpusStats(collectionId, reason) {
         // a stack trace mid-write is not.
     }
 }
+import { invalidateCoreFactsCache } from './core-facts-cache.js';
 import AsyncUtils from '../utils/async-utils.js';
 import StringUtils from '../utils/string-utils.js';
 import {
@@ -1528,6 +1531,7 @@ export async function purgeFileVectorIndex(collectionId, settings) {
         log.lifecycle(`VectTauri: Purging file vector index for collection ${collectionId}`);
         const backend = await getBackend(settings);
         await backend.purgeFileVectorIndex(collectionId, settings);
+        invalidateCoreFactsCache();
         log.lifecycle(`VectTauri: Purged vector index for collection ${collectionId}`);
     } catch (error) {
         // VEC-33: Invalidate health cache on operation error
@@ -1545,6 +1549,7 @@ export async function purgeAllVectorIndexes(settings) {
     try {
         const backend = await getBackend(settings);
         await backend.purgeAllVectorIndexes(settings);
+        invalidateCoreFactsCache();
         log.lifecycle('VectTauri: Purged all vector indexes');
         toastr.success('All vector indexes purged', 'Purge successful');
     } catch (error) {
@@ -1578,7 +1583,11 @@ export async function listChunks(collectionId, settings, options = {}) {
  */
 export async function updateChunkText(collectionId, hash, newText, settings) {
     const backend = await getBackend(settings);
-    return await backend.updateChunkText(collectionId, hash, newText, settings);
+    try {
+        return await backend.updateChunkText(collectionId, hash, newText, settings);
+    } finally {
+        invalidateCoreFactsCache();
+    }
 }
 
 /**
@@ -1590,5 +1599,9 @@ export async function updateChunkText(collectionId, hash, newText, settings) {
  */
 export async function updateChunkMetadata(collectionId, hash, metadata, settings) {
     const backend = await getBackend(settings);
-    return await backend.updateChunkMetadata(collectionId, hash, metadata, settings);
+    try {
+        return await backend.updateChunkMetadata(collectionId, hash, metadata, settings);
+    } finally {
+        invalidateCoreFactsCache();
+    }
 }

@@ -6,6 +6,9 @@
  * "Core facts" block that is prepended to the retrieved-events injection. The
  * pin flag itself lives in eventbase-pins.js.
  *
+ * Loaded pinned events are cached per collection (core-facts-cache.js), so the
+ * collection listing happens once, not every generation.
+ *
  * Reads cost nothing when nothing is pinned (the overwhelmingly common case):
  * no backend call is made, so default behaviour is untouched. No embedding call
  * is ever made — pinned events are listed by hash, not searched.
@@ -16,6 +19,7 @@ import { getBackendForCollection, getBackend } from '../backends/backend-manager
 import { resolveBackendForCollection } from './collection-ids.js';
 import { getPinnedHashes, resolveCoreFactsMax, selectCoreFacts } from './eventbase-pins.js';
 import { formatCoreFactsBlock } from './eventbase-injection.js';
+import { getCachedCoreFacts, setCachedCoreFacts, pinSignature } from './core-facts-cache.js';
 import { log } from './log.js';
 
 export { dedupeAgainstCoreFacts } from './eventbase-pins.js';
@@ -45,6 +49,12 @@ export async function fetchCoreFacts(collections, settings) {
 
     const all = [];
     for (const col of withPins) {
+        const sig = pinSignature([...col.pinned]);
+        const cached = getCachedCoreFacts(col.registryKey, sig);
+        if (cached) {
+            all.push(...cached);
+            continue;
+        }
         try {
             const resolved = resolveBackendForCollection(col.registryKey);
             const backend = resolved.backend
@@ -52,10 +62,14 @@ export async function fetchCoreFacts(collections, settings) {
                 : await getBackend(settings);
             const result = await backend.listChunks(resolved.collectionId || col.collectionId, settings, { limit: 50000 });
             const items = Array.isArray(result?.items) ? result.items : [];
+            const loaded = [];
             for (const it of items) {
                 if (!it?.metadata?.eventbase || !col.pinned.has(String(it.hash))) continue;
-                all.push({ ...it.metadata, text: it.text ?? it.metadata.text, _hash: it.hash, _sortFrame: col.collectionId });
+                loaded.push({ ...it.metadata, text: it.text ?? it.metadata.text, _hash: it.hash, _sortFrame: col.collectionId });
             }
+            // Only a successful listing is cached: a failure must be retried next turn.
+            setCachedCoreFacts(col.registryKey, sig, loaded);
+            all.push(...loaded);
         } catch (err) {
             log.warn(`[EventBase] Core facts: could not load pinned events from ${col.collectionId}:`, err?.message || err);
         }

@@ -35,6 +35,7 @@ import {
 } from '../core/eventbase-pins.js';
 import { fetchCoreFacts, combineWithCoreFacts } from '../core/eventbase-core-facts.js';
 import { formatCoreFactsBlock, formatEventsForInjectionDetailed } from '../core/eventbase-injection.js';
+import { invalidateCoreFactsCache, getCachedCoreFacts, setCachedCoreFacts, pinSignature, CORE_FACTS_CACHE_TTL_MS } from '../core/core-facts-cache.js';
 import { log } from '../core/log.js';
 
 const KEY = 'vectra:vf_eventbase_standard_c1';
@@ -49,6 +50,7 @@ const ev = (id, o = {}) => ({
 const item = (hash, e) => ({ hash, text: e.text, metadata: e });
 
 beforeEach(() => {
+    invalidateCoreFactsCache();
     mocks.meta = {};
     mocks.listChunks.mockReset();
     vi.mocked(log.warn).mockClear();
@@ -158,6 +160,68 @@ describe('fetchCoreFacts', () => {
         mocks.listChunks.mockRejectedValue(new Error('plugin down'));
         await expect(fetchCoreFacts(COL, {})).resolves.toEqual({ events: [], skipped: [] });
         expect(log.warn).toHaveBeenCalled();
+    });
+});
+
+describe('core facts cache', () => {
+    const listing = () => ({ items: [item(1, ev('e1')), item(2, ev('e2'))] });
+
+    it('lists the collection once, then serves repeat generations from memory', async () => {
+        setEventsPinned(KEY, [1], true);
+        mocks.listChunks.mockResolvedValue(listing());
+        const first = await fetchCoreFacts(COL, {});
+        const second = await fetchCoreFacts(COL, {});
+        expect(mocks.listChunks).toHaveBeenCalledTimes(1);
+        expect(second.events.map(e => e.event_id)).toEqual(first.events.map(e => e.event_id));
+    });
+
+    it('reloads when the pinned set changes (pin and unpin)', async () => {
+        setEventsPinned(KEY, [1], true);
+        mocks.listChunks.mockResolvedValue(listing());
+        await fetchCoreFacts(COL, {});
+        setEventsPinned(KEY, [2], true);
+        const out = await fetchCoreFacts(COL, {});
+        expect(mocks.listChunks).toHaveBeenCalledTimes(2);
+        expect(out.events.map(e => e.event_id).sort()).toEqual(['e1', 'e2']);
+        setEventsPinned(KEY, [1, 2], false);
+        expect((await fetchCoreFacts(COL, {})).events).toEqual([]);
+    });
+
+    it('reloads after invalidateCoreFactsCache() (insert/edit/delete/purge hook)', async () => {
+        setEventsPinned(KEY, [1], true);
+        mocks.listChunks.mockResolvedValue(listing());
+        await fetchCoreFacts(COL, {});
+        mocks.listChunks.mockResolvedValue({ items: [item(1, ev('e1', { importance: 9 }))] });
+        invalidateCoreFactsCache();
+        const out = await fetchCoreFacts(COL, {});
+        expect(mocks.listChunks).toHaveBeenCalledTimes(2);
+        expect(out.events[0].importance).toBe(9);
+    });
+
+    it('does not cache a failed listing, so the next turn retries', async () => {
+        setEventsPinned(KEY, [1], true);
+        mocks.listChunks.mockRejectedValueOnce(new Error('store down'));
+        expect((await fetchCoreFacts(COL, {})).events).toEqual([]);
+        mocks.listChunks.mockResolvedValue(listing());
+        expect((await fetchCoreFacts(COL, {})).events.map(e => e.event_id)).toEqual(['e1']);
+        expect(mocks.listChunks).toHaveBeenCalledTimes(2);
+    });
+
+    it('applies the cap per call, not per cache entry', async () => {
+        setEventsPinned(KEY, [1, 2], true);
+        mocks.listChunks.mockResolvedValue({ items: [item(1, ev('e1', { importance: 9 })), item(2, ev('e2', { importance: 5 }))] });
+        expect((await fetchCoreFacts(COL, { eventbase_core_facts_max: 1 })).events.map(e => e.event_id)).toEqual(['e1']);
+        expect((await fetchCoreFacts(COL, { eventbase_core_facts_max: 2 })).events).toHaveLength(2);
+        expect(mocks.listChunks).toHaveBeenCalledTimes(1);
+    });
+
+    it('expires after the TTL and ignores hash order in the signature', () => {
+        const sig = pinSignature([2, 1]);
+        expect(sig).toBe(pinSignature(['1', '2']));
+        setCachedCoreFacts('k', sig, [{ a: 1 }], 1000);
+        expect(getCachedCoreFacts('k', sig, 1000 + CORE_FACTS_CACHE_TTL_MS)).toEqual([{ a: 1 }]);
+        expect(getCachedCoreFacts('k', sig, 1000 + CORE_FACTS_CACHE_TTL_MS + 1)).toBeNull();
+        expect(getCachedCoreFacts('k', pinSignature([1]), 1000)).toBeNull();
     });
 });
 
