@@ -13,14 +13,17 @@ VectTauri brings full RAG (Retrieval-Augmented Generation) memory to TauriTavern
 - **Zero setup** — install the extension and it works. Vectors are stored on-device through TauriTavern's native vector engine (Rust + redb + on-device embeddings)
 - **Rich RAG metadata** — importance weighting, keywords, conditional activation, chunk groups, temporal data: everything the VectFox engine expects, preserved intact
 - **Event-Based memory** — LLM-driven event extraction keeps meaningful story moments, not just recent messages
+- **Memory that actually reaches the prompt** — retrieved events, pinned **Core Facts** and an always-on **Story State** note are injected straight into the prompt, not through lorebook triggers (see [Memory layers](#-memory-layers))
+- **Its own LLM key** — summarization / EventBase use a key that is separate from TauriTavern's main chat, so switching the main provider no longer changes it
 
 ---
 
 ## 📋 Requirements
 
 - **TauriTavern** (Android/desktop) — [Download](https://github.com/Darkatse/TauriTavern)
-- **An Embedding Model** — powers vectorization and retrieval. Default: **Transformers (Local)**, running fully on-device with no setup. Optional API providers (Ollama, OpenRouter, vLLM) can be selected in **VectTauri Settings → Embedding Provider**. Important: all vectors in a collection must come from the same model — switching models requires re-vectorizing.
-- **An LLM for Summarization / EventBase** — EventBase event extraction and summaries need a chat model. Choose between **OpenRouter**, **vLLM**, or **any Custom OpenAI-compatible endpoint** (OpenAI, LiteLLM, siliconflow, proxies) in **VectTauri Settings → LLM Summarization & EventBase Extraction** — with Base URL, API key, and a model picker that fetches the model list from your endpoint.
+- **An Embedding Model** — powers vectorization and retrieval. Default: **Transformers (Local)**, running fully on-device with no setup. Optional API providers (Ollama, OpenRouter, vLLM, Electron Hub, or any Custom OpenAI-compatible `/embeddings` endpoint) can be selected in **VectTauri Settings → Embedding Provider**. Important: all vectors in a collection must come from the same model — switching models requires re-vectorizing.
+- **An LLM for Summarization / EventBase** — EventBase event extraction and summaries need a chat model. Choose between **OpenRouter**, **vLLM**, or **any Custom OpenAI-compatible endpoint** (OpenAI, LiteLLM, siliconflow, proxies) in **VectTauri Settings → LLM Summarization & EventBase Extraction** — with Base URL, API key, and a model picker that fetches the model list from your endpoint. An optional **backup model** is used once when the main model times out or returns 429/5xx.
+  The API key you enter in the Summarization / AgentMode key boxes is **VectTauri's own** and is not shared with TauriTavern's main chat. (The Embedding key boxes still use the shared slots.) If you never enter one, VectTauri keeps using the shared key, as before.
 
 Everything else runs on-device.
 
@@ -66,6 +69,39 @@ The extension needs no transport configuration: the Similharity layer runs entir
 
 ---
 
+## 🧠 Memory layers
+
+Long chats are forgotten for two different reasons: an important fact is never found again, or the *current situation* is not in the prompt. VectTauri covers both with layers that complement each other — none replaces another.
+
+| Layer | What it is | Reaches the prompt | Where |
+|---|---|---|---|
+| **Events** | Structured events extracted by the LLM per window of messages (type, importance, summary, cause/result, characters, locations, date, keywords, open threads), stored in the vector DB | Only the ones similar to the current scene (Top-K, default 15) | EventBase tab |
+| **Core Facts** | Events you **pin** (thumbtack in the chunk viewer). Optionally auto-pinned (importance ≥ 8 and persistent) | **Always**, in a labelled "Core facts" block, before the retrieved events | Chunk viewer, EventBase tab (cap: default 8) |
+| **Story State** | One short note per chat: where/when now, who is present, the player character's premise, relationships, items, open threads. Updated incrementally by the LLM | **Always** | EventBase tab → Story State |
+
+**Story State details**
+
+- Updated every *N* extraction windows (default 3) with the same LLM as EventBase — one extra call per update. On by default; untick it in the EventBase tab to turn it off.
+- You can edit the note, **Lock** it so it is never overwritten, **Undo** the last auto-update, or **Clear** it.
+- A full **Vectorize Content** run builds the note automatically when the chat has none yet. For a chat you already vectorized, or to start over, press **Rebuild from whole chat** (about one LLM call per 30 messages; nothing changes unless every step succeeds).
+- A reply that is empty, garbled, or far shorter than the previous note is rejected and the old note is kept.
+
+**Other helpers**
+
+- **Relative time hints** — injected events carry labels like "(3 days earlier)", measured against the newest dated event in the same block. Nothing is added when a date is missing or unclear.
+- **Last retrieval** (EventBase tab) — shows, for the latest generation, which events were retrieved, their scores, and why near-misses were dropped. Use it to tell "never stored" from "retrieved but ranked low" from "injected but ignored by the model".
+
+---
+
+## ⚠️ Known limitations
+
+- **Qdrant** needs routes the built-in Similharity layer does not provide. Use the default **Standard (Vectra)** backend.
+- **Query scores:** TauriTavern's vector API returns result *order* and applies the threshold, but not the similarity score itself. VectTauri ranks correctly, but the score values it shows are rank-derived, not true cosine similarity. (It will use real scores automatically if TauriTavern starts returning them.)
+- **Re-embedding a chunk's text** is not supported for Custom / Electron Hub embedding sources in the built-in layer; delete and re-insert the chunk instead.
+- Pins and Story State notes are stored in the extension settings, so they do not travel with an exported collection or chat.
+
+---
+
 ## 🔁 Resuming Vectorization
 
 If a vectorization run stops partway — app closed, **Stop** pressed, or the LLM provider failed (quota exhausted, HTTP 502, etc.) — you don't need to re-index the whole chat:
@@ -88,6 +124,41 @@ Resume rebuilds its extraction fingerprints from the chunks already stored in th
 ## 🔄 Updating
 
 Update the extension from **Extensions panel → Check for Updates**, or reinstall from the URL above.
+
+---
+
+## 📝 Changelog
+
+### Unreleased (experimental branch)
+
+**Added**
+- **Story State** — an always-injected, auto-updating "current situation" note per chat, with Lock / Undo / Clear / Rebuild from whole chat. Built automatically after a full Vectorize Content run when the chat has no note yet.
+- **Core Facts** — pin events so they are always injected; optional auto-pin; per-collection cache so it costs nothing per generation after the first load.
+- **Last retrieval inspector** — per-generation view of retrieved events, score components and dropped candidates.
+- **Relative time hints** — "(3 days earlier)" labels on injected events.
+
+**Changed**
+- Default vector backend is now **Standard (Vectra)**.
+- Built-in Similharity layer is closer to the real plugin: chunk text/metadata editing from the chunk viewer now works, `list` supports full paging info, `stats` returns the plugin's fields, and queries report when scores are rank-derived.
+
+### Main
+
+**Added**
+- Summarization / EventBase / AgentMode / Auto-Reformat use their **own API key**, independent of TauriTavern's main chat.
+- **Electron Hub** and **Custom (OpenAI-compatible)** embedding providers.
+- Optional **backup model** for EventBase extraction (sticky for the rest of a run) with a **Test Backup** button.
+- Indonesian story-language mode for EventBase extraction and BM25 stopwords.
+- EventBase injections recorded in the Search Debug modal.
+
+**Changed**
+- EventBase defaults raised for recall: **Retrieve Top-K 10 → 15**, **Max Events per Window 3 → 5**. (Saved settings are not changed; re-vectorize to apply the new extraction cap to old chats.)
+- UI palette switched to Tauri cyan/yellow.
+
+**Fixed**
+- Query embeddings for Electron Hub / Custom sources were always empty.
+- Stale "shared with Summarize + AgentMode" key texts.
+- Chunk message ranges now display 1-based, matching chat numbering.
+- Database Browser loads all chunks instead of a truncated subset.
 
 ---
 
