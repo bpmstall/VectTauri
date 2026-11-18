@@ -1041,6 +1041,19 @@ export async function runEventBaseIngestion({ messages, chatUUID, settings: rawS
         }));
     }
 
+    // Story State: after an auto-sync run that extracted windows, fold the newly
+    // settled messages into the always-injected "current situation" note (every
+    // story_state_update_every windows). Lazy import + opt-in flag check, so with the
+    // feature off nothing here runs. Non-fatal: it can never fail the ingestion.
+    if (isAutoSync && windowsProcessed > 0 && settings.story_state_enabled === true) {
+        try {
+            const { onExtractionRun } = await import('./story-state.js');
+            await onExtractionRun({ uuid, messages, boundary: commitBoundary, windowsProcessed, settings });
+        } catch (err) {
+            log.warn('[EventBase] Story State update failed (non-fatal):', err?.message || err);
+        }
+    }
+
     return { eventsExtracted, windowsProcessed, windowsSkipped, windowsTimedOut, windowsFailed };
 }
 

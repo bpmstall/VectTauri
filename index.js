@@ -317,6 +317,13 @@ const defaultSettings = {
     eventbase_retrieval_min_importance: 1,        // Minimum importance for retrieval
     eventbase_injection_format: 'densetext',      // Injection format: 'densetext' or 'jsonarray'
     eventbase_core_facts_max: 8,                  // Max pinned "core fact" events always injected (0 = off, 0-30). Pins are set in the Database Browser.
+    // Story State: one compact "current situation" note per chat, always injected and
+    // auto-updated by the LLM every N extraction windows. OPT-IN — costs extra LLM calls.
+    story_state_enabled: false,
+    story_state_update_every: 3,                  // Extraction windows between updates (1-20)
+    story_state_max_tokens: 700,                  // LLM output budget for one update
+    story_state_max_chars: 1800,                  // Hard cap on the stored note (cut at a line boundary)
+    story_state_locked: false,                    // true = never auto-update (hand-curated note)
     eventbase_core_facts_auto: false,             // Auto-pin newly extracted events with importance >= 8 AND should_persist === true
     eventbase_relative_time: true,                // Append "(3 days earlier)" labels to injected events (vs latest dated event)
     eventbase_retrieval_filters_enabled: true,

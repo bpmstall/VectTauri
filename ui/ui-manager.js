@@ -38,7 +38,7 @@ import { refreshWorldInfoEntryDepthCache } from '../core/summarizer-injection.js
 import { getHealthIndicatorHtml, getHealthModalHtml, initializeHealthDashboard, refreshIndicator as refreshHealthIndicator } from './health-dashboard.js';
 import { doesChatHaveVectors, getCollectionRegistry, getCollectionListing, checkPluginAvailable } from '../core/collection-loader.js';
 import { getCollectionMeta } from '../core/collection-metadata.js';
-import { parseRegistryKey } from '../core/collection-ids.js';
+import { parseRegistryKey, getChatUUID } from '../core/collection-ids.js';
 import { getModelField } from '../core/providers.js';
 import { resolveOpenAiCompatibleBaseUrl, getOpenAiCompatibleApiKey, listOpenAiCompatibleEmbeddingModels } from '../core/embeddings-openai.js';
 import { getChunkingStrategies } from '../core/content-types.js';
@@ -1312,6 +1312,55 @@ export function renderSettings(containerId, settings, callbacks) {
                                     <span>Auto-pin critical events</span>
                                 </label>
                                 <small class="VectTauri_hint">Pin newly extracted events automatically when importance is 8+ and they are marked should_persist.</small>
+                            </div>
+
+                            <hr style="margin: 16px 0; opacity:0.2;" />
+
+                            <!-- Story State -->
+                            <p class="vecttauri-section-label"><strong>Story State</strong></p>
+
+                            <div class="vecttauri-form-group">
+                                <label class="checkbox_label" for="VectTauri_story_state_enabled">
+                                    <input type="checkbox" id="VectTauri_story_state_enabled" />
+                                    <span>Track the current story state</span>
+                                </label>
+                                <small class="VectTauri_hint">One short "current situation" note per chat (where/when, who is present, the player character's premise, relationships, items, open threads) that is injected on EVERY turn, so long-term facts are never forgotten. It is updated automatically from new messages after EventBase extraction. Off by default: each update costs one extra LLM call (using the same model as EventBase).</small>
+                            </div>
+
+                            <div id="VectTauri_story_state_options">
+                                <div class="vecttauri-form-group">
+                                    <label class="vecttauri-label">Update every <span id="VectTauri_story_state_update_every_val">3</span> extraction window(s)</label>
+                                    <input type="range" id="VectTauri_story_state_update_every" min="1" max="20" step="1" class="vecttauri-slider" />
+                                </div>
+
+                                <div class="vecttauri-form-group">
+                                    <label class="checkbox_label" for="VectTauri_story_state_locked">
+                                        <input type="checkbox" id="VectTauri_story_state_locked" />
+                                        <span>Lock (stop auto-updates)</span>
+                                    </label>
+                                    <small class="VectTauri_hint">Keep a hand-written note exactly as it is. The note is still injected; Update now is also blocked while locked.</small>
+                                </div>
+
+                                <div class="vecttauri-form-group">
+                                    <label class="vecttauri-label">Current note (this chat) <small id="VectTauri_story_state_meta" class="VectTauri_hint"></small></label>
+                                    <textarea id="VectTauri_story_state_text" class="vecttauri-textarea" rows="10" placeholder="Empty. It fills in automatically, or write your own here — your edits become the base for the next update."></textarea>
+                                    <small class="VectTauri_hint">Edits are saved when you leave the box.</small>
+                                </div>
+
+                                <div class="vecttauri-actions-grid">
+                                    <button id="VectTauri_story_state_update_now" class="vecttauri-action-btn vecttauri-btn-secondary">
+                                        <i class="fa-solid fa-rotate"></i>
+                                        <span>Update now</span>
+                                    </button>
+                                    <button id="VectTauri_story_state_undo" class="vecttauri-action-btn vecttauri-btn-secondary">
+                                        <i class="fa-solid fa-rotate-left"></i>
+                                        <span>Undo last auto-update</span>
+                                    </button>
+                                    <button id="VectTauri_story_state_clear" class="vecttauri-action-btn vecttauri-btn-danger-outline">
+                                        <i class="fa-solid fa-trash"></i>
+                                        <span>Clear</span>
+                                    </button>
+                                </div>
                             </div>
 
                             <div class="vecttauri-form-group">
@@ -4845,6 +4894,116 @@ function bindSettingsEvents(settings, callbacks) {
             Object.assign(extension_settings.vecttauri, settings);
             saveSettingsDebounced();
         });
+
+    // ── Story State ─────────────────────────────────────────────────────────
+    // The note itself lives per chat in core/story-state.js (not in `settings`);
+    // only the five story_state_* options go through the settings object.
+    {
+        const _ssSave = () => {
+            Object.assign(extension_settings.vecttauri, settings);
+            saveSettingsDebounced();
+        };
+        const _ssChat = () => getChatUUID();
+        const _ssLoad = () => import('../core/story-state.js');
+        const _ssBusy = (on) => $('#VectTauri_story_state_update_now').prop('disabled', on);
+
+        // Re-read the note into the textarea (skipped while the user is typing in it).
+        const _ssRefresh = async (force = false) => {
+            try {
+                const $ta = $('#VectTauri_story_state_text');
+                if (!$ta.length || (!force && $ta.is(':focus'))) return;
+                const uuid = _ssChat();
+                const { getStoryStateRecord } = await _ssLoad();
+                const rec = uuid ? getStoryStateRecord(uuid) : null;
+                $ta.val(rec?.text || '');
+                $('#VectTauri_story_state_meta').text(rec?.updatedAt ? `— updated ${new Date(rec.updatedAt).toLocaleString()}` : '');
+                $('#VectTauri_story_state_undo').prop('disabled', !rec || rec.prev === null);
+            } catch (err) {
+                console.warn('[VectTauri] Story State refresh failed:', err);
+            }
+        };
+        const _ssToggleOptions = () => $('#VectTauri_story_state_options').toggle(settings.story_state_enabled === true);
+
+        $('#VectTauri_story_state_enabled')
+            .prop('checked', settings.story_state_enabled === true)
+            .on('change', function() {
+                settings.story_state_enabled = $(this).prop('checked');
+                _ssSave();
+                _ssToggleOptions();
+                _ssRefresh(true);
+            });
+        _ssToggleOptions();
+
+        const _ssEvery = Math.max(1, Math.min(20, settings.story_state_update_every ?? 3));
+        $('#VectTauri_story_state_update_every').val(_ssEvery).on('input', function() {
+            const v = parseInt($(this).val(), 10);
+            settings.story_state_update_every = v;
+            $('#VectTauri_story_state_update_every_val').text(v);
+            _ssSave();
+        });
+        $('#VectTauri_story_state_update_every_val').text(_ssEvery);
+
+        $('#VectTauri_story_state_locked')
+            .prop('checked', settings.story_state_locked === true)
+            .on('change', function() {
+                settings.story_state_locked = $(this).prop('checked');
+                _ssSave();
+            });
+
+        $('#VectTauri_story_state_text').on('change', async function() {
+            try {
+                const uuid = _ssChat();
+                if (!uuid) return;
+                const { setStoryStateText, resolveStoryStateConfig } = await _ssLoad();
+                const stored = setStoryStateText(uuid, $(this).val(), resolveStoryStateConfig(settings).maxChars);
+                $(this).val(stored);
+                await _ssRefresh(true);
+            } catch (err) {
+                toastr.error(`Could not save the story state: ${err?.message || err}`, 'VectTauri');
+            }
+        });
+
+        $('#VectTauri_story_state_update_now').on('click', async () => {
+            const uuid = _ssChat();
+            if (!uuid) { toastr.warning('Open a chat first.', 'VectTauri Story State'); return; }
+            _ssBusy(true);
+            try {
+                const { updateStoryState } = await _ssLoad();
+                const messages = (getContext().chat || []).filter(m => m.mes && m.mes.trim().length > 0);
+                const result = await updateStoryState({ uuid, messages, settings: { ...extension_settings.vecttauri, ...settings } });
+                if (result.status === 'updated') toastr.success(result.message, 'VectTauri Story State');
+                else if (result.status === 'skipped') toastr.info(result.message || 'Nothing to update.', 'VectTauri Story State');
+                else toastr.error(result.message, 'VectTauri Story State', { timeOut: 10000 });
+            } catch (err) {
+                toastr.error(`Story State update failed: ${err?.message || err}`, 'VectTauri Story State', { timeOut: 10000 });
+            } finally {
+                _ssBusy(false);
+                _ssRefresh(true);
+            }
+        });
+
+        $('#VectTauri_story_state_undo').on('click', async () => {
+            const uuid = _ssChat();
+            const { undoStoryState } = await _ssLoad();
+            if (uuid && undoStoryState(uuid)) toastr.success('Restored the previous story state.', 'VectTauri Story State');
+            else toastr.info('Nothing to undo.', 'VectTauri Story State');
+            _ssRefresh(true);
+        });
+
+        $('#VectTauri_story_state_clear').on('click', async () => {
+            const uuid = _ssChat();
+            if (!uuid) return;
+            if (!window.confirm('Clear the story state of this chat?')) return;
+            const { clearStoryState } = await _ssLoad();
+            clearStoryState(uuid);
+            toastr.success('Story state cleared.', 'VectTauri Story State');
+            _ssRefresh(true);
+        });
+
+        eventSource.on(event_types.CHAT_CHANGED, () => _ssRefresh(true));
+        document.addEventListener('vecttauri:story-state-updated', () => _ssRefresh());
+        _ssRefresh(true);
+    }
 
     $('#VectTauri_eventbase_inspector_enabled')
         .prop('checked', settings.eventbase_inspector_enabled !== false)
