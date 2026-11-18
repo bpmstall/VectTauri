@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => {
             extensionPrompts[key] = { value, position, depth };
         }),
         runBoundedRetrieval: vi.fn(),
+        runStoryStateInjection: vi.fn(),
         log: {
             error: vi.fn(), warn: vi.fn(), lifecycle: vi.fn(), verbose: vi.fn(), trace: vi.fn(),
             domain: vi.fn(), enabled: () => false, domainEnabled: () => false,
@@ -62,6 +63,7 @@ vi.mock('../core/conditional-activation.js', () => ({ buildSearchContext: vi.fn(
 vi.mock('../ui/search-debug.js', () => ({ createDebugData: vi.fn(), setLastSearchDebug: vi.fn(), addTrace: vi.fn(), recordChunkFate: vi.fn() }));
 vi.mock('../core/bounded-retrieval.js', () => ({ runBoundedRetrieval: mocks.runBoundedRetrieval }));
 vi.mock('../core/retrieval-budget.js', () => ({ resolveEventBaseRetrievalTimeoutMs: vi.fn(() => 15000) }));
+vi.mock('../core/story-state.js', () => ({ runStoryStateInjection: mocks.runStoryStateInjection }));
 vi.mock('../core/log.js', () => ({ log: mocks.log }));
 vi.mock('../core/collection-ids.js', () => ({
     getChatUUID: vi.fn(() => 'uuid-1'), COLLECTION_PREFIXES: {}, INTERNAL_COLLECTION_IDS: {},
@@ -123,5 +125,53 @@ describe('rearrangeChat with the master switch ON', () => {
 
         for (const tag of INTERCEPTOR_TAGS) expect(valueOf(tag)).toBe('');
         expect(mocks.runBoundedRetrieval).not.toHaveBeenCalled();
+    });
+});
+
+describe('Story State (opt-in)', () => {
+    const STORY_TAG = '3_vecttauri_storystate';
+
+    it('leaves the interceptor untouched when the feature was never used', async () => {
+        await rearrangeChat(CHAT, { enabled: true, min_chat_length: 10, position: 1, depth: 2 }, 'normal');
+        expect(mocks.setExtensionPrompt.mock.calls.some(([tag]) => tag === STORY_TAG)).toBe(false);
+        expect(STORY_TAG in mocks.extensionPrompts).toBe(false);
+        expect(mocks.runStoryStateInjection).not.toHaveBeenCalled();
+    });
+
+    it('empties a previously injected block at the start of every generation', () => {
+        mocks.extensionPrompts[STORY_TAG] = { value: '<VectTauriStoryState>old</VectTauriStoryState>' };
+        clearInterceptorPrompts({ position: 1, depth: 2 });
+        expect(valueOf(STORY_TAG)).toBe('');
+    });
+
+    it('does not inject when VectTauri is switched off, even with the feature on', async () => {
+        mocks.extensionPrompts[STORY_TAG] = { value: 'old' };
+        await rearrangeChat(CHAT, { enabled: false, story_state_enabled: true, position: 1, depth: 2 }, 'normal');
+        expect(valueOf(STORY_TAG)).toBe('');
+        expect(mocks.runStoryStateInjection).not.toHaveBeenCalled();
+    });
+
+    // The tail of rearrangeChat (chunk path) needs more host state than this file mocks, so
+    // it may throw AFTER the Story State step; only the step itself is under test here.
+    const runTurn = async (settings) => {
+        try { await rearrangeChat(CHAT, { enabled: true, position: 1, depth: 2, ...settings }, 'normal'); } catch (err) { return err; }
+        return null;
+    };
+
+    it('runs the injection on a normal turn when enabled, independent of EventBase retrieval', async () => {
+        await runTurn({ story_state_enabled: true });
+        expect(mocks.runStoryStateInjection).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not run the injection when the feature is off', async () => {
+        await runTurn({ story_state_enabled: false });
+        expect(mocks.runStoryStateInjection).not.toHaveBeenCalled();
+    });
+
+    it('a failing story-state injection never breaks generation', async () => {
+        mocks.runStoryStateInjection.mockImplementationOnce(() => { throw new Error('story-state-boom'); });
+        const err = await runTurn({ story_state_enabled: true });
+        expect(err?.message).not.toBe('story-state-boom');
+        expect(mocks.log.error).toHaveBeenCalled();
     });
 });

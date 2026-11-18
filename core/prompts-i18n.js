@@ -978,6 +978,89 @@ export function getEventBaseExtractionPrompt(mode) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// STORY STATE UPDATE PROMPT
+// ─────────────────────────────────────────────────────────────────────────────
+// Incremental "current situation" tracker (core/story-state.js). The model gets
+// the previous note plus the newest chat messages and returns the FULL new note.
+// Only the output LANGUAGE varies per mode; the section headers stay fixed so the
+// reply can be validated (STORY_STATE_SECTIONS) and the note stays scannable.
+
+/** Fixed section headers of a story-state note, in output order. */
+export const STORY_STATE_SECTIONS = Object.freeze([
+    'SITUATION',
+    'PLAYER CHARACTER',
+    'RELATIONSHIPS',
+    'ITEMS AND ABILITIES',
+    'GOALS AND OPEN THREADS',
+]);
+
+const _STORY_STATE_LANG = {
+    intl:           'English',
+    jieba:          'Simplified Chinese (简体中文)',
+    jieba_tw:       'Traditional Chinese (繁體中文)',
+    tiny_segmenter: 'Japanese (日本語)',
+    korean:         'Korean (한국어)',
+    id:             'Bahasa Indonesia',
+    others:         'the same language as the chat messages (detect it; do not default to English)',
+};
+
+const _STORY_STATE_TEMPLATE =
+`You maintain the "story state": a short note of the CURRENT situation of a roleplay, always shown to the storyteller so it never forgets long-term facts.
+
+You get the PREVIOUS STATE and the NEW MESSAGES. Return the complete UPDATED STATE.
+
+Rules:
+- KEEP facts from the previous state that are still true. UPDATE the ones that changed. DROP the ones that are resolved or no longer matter.
+- Use only what the previous state or the messages say. Never invent or guess.
+- Keep durable premise facts (for example "arrived in this world about a week ago") until the story changes them.
+- Write all content in {{language}}. Keep proper nouns exactly as written in the messages.
+- Plain text only: no JSON, no markdown, no code fences, no commentary before or after.
+- Be terse: short "- " bullet lines, at most {{maxChars}} characters in total.
+- Use EXACTLY these section headers, each on its own line, in this order (omit a header only if it has nothing to say):
+{{sections}}
+
+SITUATION = where and when it is now (in-story date/time if known), who is present, what is happening.
+PLAYER CHARACTER = the player character's status and premise facts.
+RELATIONSHIPS = key relationships and their current state.
+ITEMS AND ABILITIES = important items, equipment and abilities in play.
+GOALS AND OPEN THREADS = active goals, promises and unresolved threads.
+
+=========================
+PREVIOUS STATE
+=========================
+{{previous}}
+
+=========================
+NEW MESSAGES
+=========================
+{{messages}}
+
+=========================
+Return ONLY the updated state now. Begin with the first section header.`;
+
+/**
+ * Build the story-state update prompt.
+ *
+ * @param {object} params
+ * @param {string} params.previous - previous state text ('' when none yet)
+ * @param {string} params.messages - the new chat messages, already formatted
+ * @param {number} params.maxChars - soft length target stated to the model
+ * @param {string} [params.mode]   - CJK tokenizer mode (story language); unknown → intl
+ * @returns {string}
+ */
+export function buildStoryStateUpdatePrompt({ previous, messages, maxChars, mode }) {
+    const language = _STORY_STATE_LANG[mode] ?? _STORY_STATE_LANG.intl;
+    // Function replacers: chat text may contain "$&" / "$1" that String.replace would expand.
+    return _STORY_STATE_TEMPLATE
+        .replace('{{language}}', () => language)
+        .replace('{{maxChars}}', () => String(maxChars))
+        .replace('{{sections}}', () => STORY_STATE_SECTIONS.join('\n'))
+        .replace('{{previous}}', () => (previous && previous.trim()) ? previous.trim() : '(none yet — this is the first state)')
+        .replace('{{messages}}', () => messages);
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PLANNER USER MESSAGE BUILDER
 // ─────────────────────────────────────────────────────────────────────────────
 

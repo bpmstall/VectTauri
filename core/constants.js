@@ -23,6 +23,9 @@ export const LOREBOOK_PROMPT_TAG = '3_vecttauri_lorebook';
 /** Extension prompt tag for EventBase semantic-retrieval injection */
 export const EVENTBASE_PROMPT_TAG = `${EXTENSION_PROMPT_TAG}_eventbase`;
 
+/** Extension prompt tag for the always-injected Story State note */
+export const STORY_STATE_PROMPT_TAG = `${EXTENSION_PROMPT_TAG}_storystate`;
+
 /** Extension prompt tag for Summarizer Injection (most recent N EventBase events) */
 export const SUMMARIZER_PROMPT_TAG = `${EXTENSION_PROMPT_TAG}_summarizer`;
 

@@ -33,7 +33,7 @@ import { getChunkMetadata, getCollectionMeta } from './collection-metadata.js';
 import { createDebugData, setLastSearchDebug, addTrace, recordChunkFate } from '../ui/search-debug.js';
 import { Queue, LRUCache } from '../utils/data-structures.js';
 import { getRequestHeaders } from '../../../../../script.js';
-import { EXTENSION_PROMPT_TAG, EVENTBASE_PROMPT_TAG, SUMMARIZER_PROMPT_TAG, HASH_CACHE_SIZE } from './constants.js';
+import { EXTENSION_PROMPT_TAG, EVENTBASE_PROMPT_TAG, SUMMARIZER_PROMPT_TAG, STORY_STATE_PROMPT_TAG, HASH_CACHE_SIZE } from './constants.js';
 import { runBoundedRetrieval } from './bounded-retrieval.js';
 import { resolveEventBaseRetrievalTimeoutMs } from './retrieval-budget.js';
 import { log } from './log.js';
@@ -1285,6 +1285,11 @@ export function clearInterceptorPrompts(settings) {
     }
     setExtensionPrompt(EVENTBASE_PROMPT_TAG, '', settings.position, settings.depth, false);
     setExtensionPrompt(SUMMARIZER_PROMPT_TAG, '', settings.position, settings.depth, false);
+    // Story State is opt-in: only touch its slot when it was ever filled, so a user
+    // who never enabled it sees no extra extension-prompt key.
+    if (STORY_STATE_PROMPT_TAG in extension_prompts) {
+        setExtensionPrompt(STORY_STATE_PROMPT_TAG, '', settings.position, settings.depth, false);
+    }
 }
 
 /**
@@ -1335,6 +1340,18 @@ export async function rearrangeChat(chat, settings, type, { dryRun = false, test
 
         // EventBase workflow: Phase A — skipped in dryRun (EventBase has its own dry-run path).
         if (!dryRun) {
+            // Story State: the always-injected "current situation" note. Independent of
+            // EventBase retrieval above (it must come out even when that finds nothing),
+            // times out or fails to load), synchronous inside, and never allowed to break generation.
+            if (settings.story_state_enabled === true) {
+                try {
+                    const { runStoryStateInjection } = await import('./story-state.js');
+                    runStoryStateInjection(settings);
+                } catch (error) {
+                    log.error('VectTauri Story State: injection error (non-fatal):', error);
+                }
+            }
+
             const queryText = buildSearchQuery(chat, settings);
             if (queryText) {
                 const { runEventBaseRetrieval } = await import('./eventbase-workflow.js');
