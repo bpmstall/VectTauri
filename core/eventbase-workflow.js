@@ -1385,7 +1385,7 @@ export async function runEventBaseRetrieval({ chat, searchText, settings, chatUU
     try {
         const debugData = createDebugData();
         debugData.query = keywordQuery || searchText || '';
-        debugData.collectionId = lockedLiveCollections.map(c => c.id).join(', ') || null;
+        debugData.collectionId = lockedLiveCollections.map(c => c.collectionId).filter(Boolean).join(', ') || null;
         const asChunk = (e) => ({
             hash: e.hash ?? e.event_id ?? null,
             text: e.summary || e.text || '',
@@ -1393,7 +1393,15 @@ export async function runEventBaseRetrieval({ chat, searchText, settings, chatUU
             metadata: e,
         });
         debugData.stages.initial = events.map(asChunk);
+        // EventBase has no separate threshold/condition passes here (the threshold is
+        // applied inside retrieval), so every stage shows the events that were kept.
+        // Leaving afterThreshold empty made the modal read "Threshold 0 (-N)".
+        debugData.stages.afterThreshold = events.map(asChunk);
         debugData.stages.afterConditions = events.map(asChunk);
+        debugData.settings = {
+            threshold: settings.score_threshold ?? 0.25,
+            topK: settings.eventbase_retrieval_top_k || 15,
+        };
         debugData.stages.injected = events.slice(0, injectedCount).map(asChunk);
         debugData.injection = {
             verified: true,
@@ -1403,6 +1411,7 @@ export async function runEventBaseRetrieval({ chat, searchText, settings, chatUU
             charCount: injectionText.length,
         };
         debugData.stats.retrievedFromVector = events.length;
+        debugData.stats.passedThreshold = events.length;
         debugData.stats.afterConditions = events.length;
         debugData.stats.actuallyInjected = injectedCount;
         setLastSearchDebug(debugData);
