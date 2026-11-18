@@ -62,7 +62,7 @@ const defaultSettings = {
 
     // Core vector settings
     embedding_provider: 'transformers', // embedding provider selection (was `source` pre-Phase-B)
-    vector_backend: 'qdrant', // Backend: 'standard' (ST Vectra) | 'qdrant'
+    vector_backend: 'standard', // Backend: 'standard' (ST Vectra, built-in) | 'qdrant' (needs a real Qdrant-capable bridge; the built-in shim does not serve the Qdrant routes)
     qdrant_host: '127.0.0.1',
     qdrant_port: 6333,
     qdrant_url: '',
