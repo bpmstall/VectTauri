@@ -250,3 +250,40 @@ export function formatEventsForInjectionDetailed(events, _settings) {
     };
 }
 
+// ---------------------------------------------------------------------------
+// Core facts block (pinned events)
+// ---------------------------------------------------------------------------
+
+/**
+ * Header for the pinned block. Stronger than INJECTION_HEADER on purpose: these
+ * are premises the user marked as permanently true, not recalled memories.
+ */
+const CORE_FACTS_HEADER =
+    'Core facts — always true. The user pinned these events as established premises of the story; '
+    + 'they hold regardless of the current scene and must never be contradicted. '
+    + 'Ordered oldest → newest by message_order.';
+
+/**
+ * Format pinned events as a standalone "Core facts" block, using the same
+ * per-event formatters as retrieved events (so densetext/jsonarray/summaryonly
+ * stay consistent). Pinned events are not ranked by retrieval, so the
+ * relevance-rank field is left empty. Not part of Top-K.
+ *
+ * @param {object[]} events   - pinned EventRecord objects
+ * @param {object}   settings - VectTauri settings (eventbase_injection_format)
+ * @returns {{ text: string, includedCount: number }}
+ */
+export function formatCoreFactsBlock(events, settings) {
+    if (!events?.length) return { text: '', includedCount: 0 };
+
+    const ordered = _orderEventsForPresentation(events);
+    const format = String(settings?.eventbase_injection_format || 'densetext').toLowerCase();
+    const body = format === 'densetext'
+        ? _formatAsDenseText(ordered)
+        : format === 'summaryonly'
+            ? _formatAsSummaryOnly(ordered)
+            : _formatAsJson(ordered);
+
+    return { text: `${CORE_FACTS_HEADER}\n${body}`, includedCount: ordered.length };
+}
+

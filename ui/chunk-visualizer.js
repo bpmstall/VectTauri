@@ -27,6 +27,8 @@ import { getContext } from '../../../../extensions.js';
 import { eventSource, getRequestHeaders } from '../../../../../script.js';
 import StringUtils from '../utils/string-utils.js';
 import { packTimelineSortKey } from '../core/eventbase-schema.js';
+import { getPinnedHashes, setEventPinned } from '../core/eventbase-pins.js';
+import { buildRegistryKey } from '../core/collection-ids.js';
 import { log } from '../core/log.js';
 import { getPluginUrl, similharityFetch } from '../utils/similharity-url.js';
 
@@ -55,6 +57,7 @@ let selectedHashes = new Set();
 let hasUnsavedChanges = false;
 let pendingChanges = new Map(); // hash -> {keywords, enabled, conditions, etc.}
 let plaintextKeywordMode = false; // Toggle for plaintext keyword editing
+let pinnedSet = new Set(); // String(hash) of pinned "core fact" events (EventBase collections only)
 
 // ============================================================================
 // COLLECTION TYPE HELPERS
@@ -82,6 +85,33 @@ function getCollectionIcon() {
 function isEventBaseCollection() {
     const id = String(currentCollectionId || '').toLowerCase();
     return id.startsWith('vf_eventbase_') || id.includes('_eventbase_');
+}
+
+// ============================================================================
+// CORE FACTS (PINNED EVENTS)
+// ============================================================================
+
+/** Registry key under which this collection's pinned-event set is stored. */
+function pinRegistryKey() {
+    return buildRegistryKey(currentCollectionId, currentSettings?.vector_backend);
+}
+
+function isChunkPinned(chunk) {
+    return pinnedSet.has(String(chunk.hash));
+}
+
+/**
+ * Pin/unpin an event. Writes to the collection-metadata store only — no backend
+ * call, no re-embed — see core/eventbase-pins.js.
+ */
+function togglePin(chunk) {
+    const pin = !isChunkPinned(chunk);
+    setEventPinned(pinRegistryKey(), chunk.hash, pin);
+    if (pin) pinnedSet.add(String(chunk.hash)); else pinnedSet.delete(String(chunk.hash));
+    toastr.info(pin ? 'Pinned as core fact — always injected' : 'Unpinned', 'VectTauri', { timeOut: 2000 });
+    applyFilters();
+    renderChunkList();
+    renderDetailPanel();
 }
 
 // ============================================================================
@@ -298,6 +328,7 @@ export function openVisualizer(results, collectionId, settings, onReload = null)
     selectedHashes.clear();
     pendingChanges.clear();
     hasUnsavedChanges = false;
+    pinnedSet = new Set(getPinnedHashes(pinRegistryKey()).map(String));
 
     // Process chunks - add unique identifier for each chunk
     allChunks = (results?.chunks || []).map((chunk, idx) => ({
@@ -438,6 +469,9 @@ function applyFilters() {
         case 'keywords':
             chunks = chunks.filter(c => c.data.keywords?.length > 0);
             break;
+        case 'pinned':
+            chunks = chunks.filter(isChunkPinned);
+            break;
     }
 
     // Sort
@@ -461,6 +495,11 @@ function applyFilters() {
             break;
         case 'index-r':
             chunks.sort((a, b) => chunkTimelineSortValue(b) - chunkTimelineSortValue(a));
+            break;
+        case 'pinned-first':
+            // Pinned first, each group in message order.
+            chunks.sort((a, b) => (isChunkPinned(b) - isChunkPinned(a))
+                || chunkTimelineSortValue(a) - chunkTimelineSortValue(b));
             break;
         default: // 'index'
             chunks.sort((a, b) => chunkTimelineSortValue(a) - chunkTimelineSortValue(b));
@@ -517,6 +556,7 @@ function createModal() {
                                     <option value="keywords">Sort: Most Keywords</option>
                                     <option value="modified">Sort: Recently Modified</option>
                                     <option value="index-r">Sort: Message order Reversed</option>
+                                    ${isEventBaseCollection() ? '<option value="pinned-first">Sort: Pinned First</option>' : ''}
 
                                 </select>
                                 <select class="vecttauri-list-filter" id="VectTauri_chunk_filter">
@@ -525,6 +565,7 @@ function createModal() {
                                     <option value="disabled">Disabled</option>
                                     <option value="keywords">Has Keywords</option>
                                     <option value="conditions">Has Conditions</option>
+                                    ${isEventBaseCollection() ? '<option value="pinned">📌 Pinned (Core Facts)</option>' : ''}
                                 </select>
                             </div>
                                 <div class="vecttauri-fetch-limit-control">
@@ -640,6 +681,12 @@ function renderChunkItem(chunk, listIndex) {
     if (hasConditions) featureBadges.push(`<span class="vecttauri-chunk-item-badge conditions" title="Has ${data.conditions.rules.length} condition(s)">⚡${data.conditions.rules.length}</span>`);
     if (hasKeywords) featureBadges.push(`<span class="vecttauri-chunk-item-badge keywords" title="Has ${data.keywords.length} keyword(s)">🏷️${data.keywords.length}</span>`);
 
+    const pinned = isEventBaseCollection() && isChunkPinned(chunk);
+    if (pinned) featureBadges.push(`<span class="vecttauri-chunk-item-badge pinned" title="Pinned core fact — always injected">📌</span>`);
+    const pinButton = isEventBaseCollection()
+        ? `<span class="vecttauri-chunk-pin-btn${pinned ? ' pinned' : ''}" data-uid="${chunk.uniqueId}" title="${pinned ? 'Unpin core fact' : 'Pin as core fact (always injected)'}"><i class="fa-solid fa-thumbtack"></i></span>`
+        : '';
+
     const bulkCheckbox = bulkSelectMode
         ? `<input type="checkbox" class="vecttauri-bulk-checkbox" data-uid="${chunk.uniqueId}" ${selectedChunksSet.has(chunk.uniqueId) ? 'checked' : ''} title="Select for bulk action">`
         : '';
@@ -652,6 +699,7 @@ function renderChunkItem(chunk, listIndex) {
                 <div class="vecttauri-chunk-item-header">
                     <span class="vecttauri-chunk-item-index">${displayNumber}.</span>
                     <span class="vecttauri-chunk-item-name">${StringUtils.escapeHtml(displayName)}</span>
+                    ${pinButton}
                 </div>
                 <div class="vecttauri-chunk-item-stats">
                     <div class="vecttauri-chunk-item-badges info-badges">${infoBadges.join('')}</div>
@@ -727,6 +775,9 @@ function renderDetailPanel() {
                        placeholder="Name this chunk..."
                        value="${StringUtils.escapeHtml(data.name || '')}">
             </div>
+            ${isEventBase ? `<button class="vecttauri-detail-pin${isChunkPinned(chunk) ? ' pinned' : ''}" id="VectTauri_pin_chunk" title="Pinned events are always injected in the Core facts block, regardless of the scene">
+                <i class="fa-solid fa-thumbtack"></i> ${isChunkPinned(chunk) ? 'Unpin' : 'Pin as core fact'}
+            </button>` : ''}
             <button class="vecttauri-detail-delete${bulkSelectMode ? ' vecttauri-btn-dimmed' : ''}" id="VectTauri_delete_chunk" ${bulkSelectMode ? 'disabled' : ''}>
                 <i class="fa-solid fa-trash"></i> Delete
             </button>
@@ -1067,6 +1118,7 @@ function bindEvents() {
     $('#VectTauri_visualizer_modal').on('click', '.vecttauri-chunk-item', function(e) {
         // Let the checkbox handle its own click/change — e.preventDefault() below would cancel the toggle
         if ($(e.target).hasClass('vecttauri-bulk-checkbox')) return;
+        if ($(e.target).closest('.vecttauri-chunk-pin-btn').length) return; // handled by the pin handler
         e.preventDefault();
         e.stopPropagation();
         const uid = $(this).attr('data-uid');
@@ -1085,6 +1137,14 @@ function bindEvents() {
         selectedChunkId = uid;
         renderChunkList();
         renderDetailPanel();
+    });
+
+    // Pin toggle on a list row (delegated — list is re-rendered frequently)
+    $('#VectTauri_visualizer_modal').on('click', '.vecttauri-chunk-pin-btn', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const chunk = allChunksMap.get($(this).attr('data-uid'));
+        if (chunk) togglePin(chunk);
     });
 
     // Load more
@@ -1256,6 +1316,7 @@ function bindDetailEvents() {
 
     // Delete chunk
     $('#VectTauri_delete_chunk').on('click', () => deleteChunk(chunk));
+    $('#VectTauri_pin_chunk').on('click', () => togglePin(chunk));
 
     // Keyword mode toggle (plaintext vs badge)
     $('#VectTauri_keyword_mode').on('click', function() {

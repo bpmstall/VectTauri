@@ -316,6 +316,8 @@ const defaultSettings = {
     eventbase_retrieval_top_k: 15,                // Events to retrieve per generation
     eventbase_retrieval_min_importance: 1,        // Minimum importance for retrieval
     eventbase_injection_format: 'densetext',      // Injection format: 'densetext' or 'jsonarray'
+    eventbase_core_facts_max: 8,                  // Max pinned "core fact" events always injected (0 = off, 0-30). Pins are set in the Database Browser.
+    eventbase_core_facts_auto: false,             // Auto-pin newly extracted events with importance >= 8 AND should_persist === true
     eventbase_retrieval_filters_enabled: true,
     eventbase_autosync_popup: true,               // Show popup toast when auto-sync extraction runs
     autosync_show_progress_modal: false,          // Show progress modal popup during auto-sync (default: silent)
