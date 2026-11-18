@@ -1,5 +1,5 @@
 {
-    "display_name": "VectTauri",
+    "display_name": "VectTauri (汉化版)",
     "loading_order": 101,
     "requires": [],
     "optional": [
@@ -11,7 +11,7 @@
     "author": "Lunarcade Digital",
     "version": "1.1.0",
     "homePage": "https://github.com/KritBlade/VectFox",
-    "description": "Advanced RAG system with temporal decay, importance weighting, and intelligent chunking",
+    "description": "高级 RAG 向量记忆系统：支持时间衰减、权重评分、EventBase 事件提取与智能分块（中文界面）",
     "auto_update": true,
     "hooks": {
         "update": "onUpdate"

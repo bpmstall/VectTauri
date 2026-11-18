@@ -43,6 +43,7 @@ import { runNetworkStartup } from './core/network-startup.js';
 
 // VectTauri modules - UI
 import { renderSettings, openDiagnosticsModal, loadWebLlmModels, updateWebLlmStatus, refreshAutoSyncCheckbox } from './ui/ui-manager.js';
+import { initZhLocalization } from './ui/i18n-zh.js';
 import { initializeVisualizer } from './ui/chunk-visualizer.js';
 import { initializeDatabaseBrowser } from './ui/database-browser.js';
 import { initializeWorldInfoIntegration } from './core/world-info-integration.js';
@@ -760,6 +761,9 @@ jQuery(async () => {
 
     // Initialize database browser
     initializeDatabaseBrowser(settings);
+
+    // Initialize Simplified Chinese UI localization
+    initZhLocalization();
 
     // Initialize world info integration hooks
     initializeWorldInfoIntegration();
