@@ -1300,6 +1300,20 @@ export function renderSettings(containerId, settings, callbacks) {
                             </div>
 
                             <div class="vecttauri-form-group">
+                                <label class="vecttauri-label">Core Facts Max <span id="VectTauri_eventbase_core_facts_max_val">8</span></label>
+                                <input type="range" id="VectTauri_eventbase_core_facts_max" min="0" max="30" step="1" class="vecttauri-slider" />
+                                <small class="VectTauri_hint">Pinned events (📌 in the Database Browser chunk view) are always injected in a "Core facts" block, outside Top-K. If more are pinned, the highest-importance, most recent ones are kept. 0 = off.</small>
+                            </div>
+
+                            <div class="vecttauri-form-group">
+                                <label class="checkbox_label" for="VectTauri_eventbase_core_facts_auto">
+                                    <input type="checkbox" id="VectTauri_eventbase_core_facts_auto" />
+                                    <span>Auto-pin critical events</span>
+                                </label>
+                                <small class="VectTauri_hint">Pin newly extracted events automatically when importance is 8+ and they are marked should_persist.</small>
+                            </div>
+
+                            <div class="vecttauri-form-group">
                                 <label class="vecttauri-label">Injection Format</label>
                                 <select id="VectTauri_eventbase_injection_format" class="vecttauri-select">
                                     <option value="jsonarray">JSONArray</option>
@@ -4803,6 +4817,15 @@ function bindSettingsEvents(settings, callbacks) {
     _bindEventBaseRange('max_events_per_window', 'eventbase_max_events_per_window', 'max_events_per_window');
     _bindEventBaseRange('retrieval_top_k', 'eventbase_retrieval_top_k', 'retrieval_top_k');
     _bindEventBaseRange('retrieval_min_importance', 'eventbase_retrieval_min_importance', 'retrieval_min_importance');
+    _bindEventBaseRange('core_facts_max', 'eventbase_core_facts_max', 'core_facts_max');
+
+    $('#VectTauri_eventbase_core_facts_auto')
+        .prop('checked', settings.eventbase_core_facts_auto === true)
+        .on('change', function() {
+            settings.eventbase_core_facts_auto = $(this).prop('checked');
+            Object.assign(extension_settings.vecttauri, settings);
+            saveSettingsDebounced();
+        });
 
     $('#VectTauri_eventbase_injection_format')
         .val(settings.eventbase_injection_format || 'densetext')

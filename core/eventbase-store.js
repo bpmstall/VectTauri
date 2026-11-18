@@ -19,6 +19,7 @@ import { saveSettingsDebounced, getRequestHeaders, getCurrentChatId } from '../.
 import { extension_settings, getContext } from '../../../../extensions.js';
 import { getChatUUID, buildEventBaseCollectionId, getRegistryBackend, COLLECTION_PREFIXES, parseRegistryKey, buildChatSearchPatterns, matchesPatterns } from './collection-ids.js';
 import { registerCollection, getCollectionRegistry, getCollectionListing } from './collection-loader.js';
+import { setEventsPinned, pickAutoPinHashes, AUTO_PIN_MIN_IMPORTANCE } from './eventbase-pins.js';
 import { getChatLockedCollections, isCollectionActiveForContextAnyKey } from './collection-metadata.js';
 import { buildEmbedText } from './eventbase-schema.js';
 import { log } from './log.js';
@@ -288,6 +289,19 @@ export async function insertEvents(events, settings, abortSignal = null, collect
     const registryBackend = getRegistryBackend(settings?.vector_backend);
     const registryKey = `${registryBackend}:${collectionId}`;
     registerCollection(registryKey);
+
+    // Optional auto-promotion to Core Facts (off by default). Non-fatal: the
+    // events are already stored, so a metadata hiccup must not fail the insert.
+    if (settings?.eventbase_core_facts_auto === true) {
+        try {
+            const autoPinned = pickAutoPinHashes(events, items.map(it => it.hash));
+            if (autoPinned.length > 0 && setEventsPinned(registryKey, autoPinned, true)) {
+                log.lifecycle(`[EventBase] Auto-pinned ${autoPinned.length} core fact(s) (importance >= ${AUTO_PIN_MIN_IMPORTANCE}, should_persist)`);
+            }
+        } catch (err) {
+            log.warn('[EventBase] Core facts auto-pin failed (events were stored):', err?.message || err);
+        }
+    }
 
     log.lifecycle(`[EventBase] Insert complete for collection "${collectionId}"`);
 }

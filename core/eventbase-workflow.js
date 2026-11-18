@@ -1184,6 +1184,27 @@ export async function runEventBaseRetrieval({ chat, searchText, settings, chatUU
         log.verbose(`[EventBase] Keyword query (user last message, ${keywordQuery.length} chars):`, keywordQuery.slice(0, 120));
     }
 
+    // Core facts (pinned events): a plain metadata listing — no embedding call —
+    // started now so it overlaps the vector queries. Costs nothing when nothing
+    // is pinned. fetchCoreFacts never throws; the bound only guards a hung list
+    // call so it cannot eat the retrieval's own budget.
+    // Lazy-loaded (like chat-vectorization's workflow import) so the ingestion-only
+    // callers of this module don't pull in the backend layer.
+    const { fetchCoreFacts, dedupeAgainstCoreFacts, combineWithCoreFacts } = await import('./eventbase-core-facts.js');
+    const { runBoundedRetrieval } = await import('./bounded-retrieval.js');
+    const { resolveRetrievalTimeoutMs } = await import('./retrieval-budget.js');
+    const coreFactsPromise = runBoundedRetrieval(
+        fetchCoreFacts([...lockedLiveCollections, ...archiveCollections], settings),
+        {
+            contextLabel: 'EventBase',
+            sourceName: 'core facts',
+            timeoutMessage: 'EventBase core facts lookup timed out',
+            fallback: { events: [], skipped: [] },
+            settings,
+            timeoutMs: resolveRetrievalTimeoutMs(settings),
+        },
+    );
+
     // --- Query archive event collections in parallel ---
     // Archive events are stored with the same schema as live EventBase events so we
     // query them via queryCollection directly and attach _hash (same as queryEvents does).
@@ -1225,7 +1246,7 @@ export async function runEventBaseRetrieval({ chat, searchText, settings, chatUU
     // canonical re-ranker. Otherwise it returns the pre-search output unchanged,
     // making it a safe drop-in replacement.
     const retrieveFn = settings.agentic_retrieval_enabled ? retrieveEventsWithAgent : retrieveEvents;
-    const { events, debug } = await retrieveFn({
+    const { events: retrievedEvents, debug } = await retrieveFn({
         searchText: effectiveSearchText,
         keywordQuery,
         chatLength: getContext().chat?.length || chat?.length || 0,
@@ -1245,7 +1266,12 @@ export async function runEventBaseRetrieval({ chat, searchText, settings, chatUU
 
     log.trace('[EventBase] Retrieval debug:', debug);
 
-    if (!events?.length) {
+    // Pinned events are injected in their own block ahead of the retrieved ones;
+    // drop them from the retrieved set so nothing appears twice.
+    const coreEvents = (await coreFactsPromise)?.events || [];
+    const events = dedupeAgainstCoreFacts(retrievedEvents, coreEvents);
+
+    if (!events?.length && coreEvents.length === 0) {
         log.lifecycle('[EventBase] No events to inject');
         log.verbose(`[EventBase Popup] no-events branch gate: retrieval_popup_on_result=${settings.retrieval_popup_on_result} → fire=${!!settings.retrieval_popup_on_result}`);
         if (settings.retrieval_popup_on_result) {
@@ -1272,9 +1298,13 @@ export async function runEventBaseRetrieval({ chat, searchText, settings, chatUU
         return;
     }
 
-    const injectionResult = formatEventsForInjectionDetailed(events, settings);
-    let injectionText = injectionResult.text;
+    const injectionResult = events?.length
+        ? formatEventsForInjectionDetailed(events, settings)
+        : { text: '', includedCount: 0 };
+    const combined = combineWithCoreFacts(coreEvents, injectionResult.text, settings);
+    let injectionText = combined.text;
     const injectedCount = injectionResult.includedCount;
+    const coreFactCount = combined.coreCount;
     if (!injectionText) {
         log.verbose('[EventBase] Injection text empty after formatting');
         if (dryRun) return { injectionText: null, eventCount: 0, lockedCollectionsCount: lockedLiveCollections.length, archiveCollectionsCount: archiveCollections.length };
@@ -1284,7 +1314,7 @@ export async function runEventBaseRetrieval({ chat, searchText, settings, chatUU
 
     log.verbose(`[EventBase Popup] success gate: retrieval_popup_on_result=${settings.retrieval_popup_on_result}, dryRun=${dryRun}, injectedCount=${injectedCount} → fire=${!!settings.retrieval_popup_on_result}`);
     if (settings.retrieval_popup_on_result) {
-        toastr.success(`EventBase: ${injectedCount} event(s) injected`, 'VectTauri Retrieval');
+        toastr.success(`EventBase: ${injectedCount} event(s) injected${coreFactCount ? ` (+${coreFactCount} core fact(s))` : ''}`, 'VectTauri Retrieval');
     }
 
     // Apply global RAG context if configured (same as legacy chunk path)
@@ -1301,7 +1331,7 @@ export async function runEventBaseRetrieval({ chat, searchText, settings, chatUU
 
     // Dry-run: return text without touching the extension prompt slot
     if (dryRun) {
-        return { injectionText, eventCount: injectedCount, lockedCollectionsCount: lockedLiveCollections.length, archiveCollectionsCount: archiveCollections.length };
+        return { injectionText, eventCount: injectedCount, coreFactCount, lockedCollectionsCount: lockedLiveCollections.length, archiveCollectionsCount: archiveCollections.length };
     }
 
     // Clear any previous EventBase injection
