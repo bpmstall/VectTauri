@@ -1324,7 +1324,7 @@ export function renderSettings(containerId, settings, callbacks) {
                                     <input type="checkbox" id="VectTauri_story_state_enabled" />
                                     <span>Track the current story state</span>
                                 </label>
-                                <small class="VectTauri_hint">One short "current situation" note per chat (where/when, who is present, the player character's premise, relationships, items, open threads) that is injected on EVERY turn, so long-term facts are never forgotten. It is updated automatically from new messages after EventBase extraction. Off by default: each update costs one extra LLM call (using the same model as EventBase).</small>
+                                <small class="VectTauri_hint">One short "current situation" note per chat (where/when, who is present, the player character's premise, relationships, items, open threads) that is injected on EVERY turn, so long-term facts are never forgotten. It is updated automatically from new messages after EventBase extraction. On by default: each update costs one extra LLM call (same model as EventBase), once every few extraction windows. A note starts empty and only learns from the newest messages — after turning this on for an existing chat, or after a full re-vectorize, press "Rebuild from whole chat".</small>
                             </div>
 
                             <div id="VectTauri_story_state_options">
@@ -1351,6 +1351,10 @@ export function renderSettings(containerId, settings, callbacks) {
                                     <button id="VectTauri_story_state_update_now" class="vecttauri-action-btn vecttauri-btn-secondary">
                                         <i class="fa-solid fa-rotate"></i>
                                         <span>Update now</span>
+                                    </button>
+                                    <button id="VectTauri_story_state_rebuild" class="vecttauri-action-btn vecttauri-btn-secondary" title="Read the whole chat from the first message and build the note from scratch (several LLM calls)">
+                                        <i class="fa-solid fa-hammer"></i>
+                                        <span>Rebuild from whole chat</span>
                                     </button>
                                     <button id="VectTauri_story_state_undo" class="vecttauri-action-btn vecttauri-btn-secondary">
                                         <i class="fa-solid fa-rotate-left"></i>
@@ -4905,7 +4909,7 @@ function bindSettingsEvents(settings, callbacks) {
         };
         const _ssChat = () => getChatUUID();
         const _ssLoad = () => import('../core/story-state.js');
-        const _ssBusy = (on) => $('#VectTauri_story_state_update_now').prop('disabled', on);
+        const _ssBusy = (on) => $('#VectTauri_story_state_update_now, #VectTauri_story_state_rebuild').prop('disabled', on);
 
         // Re-read the note into the textarea (skipped while the user is typing in it).
         const _ssRefresh = async (force = false) => {
@@ -4977,6 +4981,36 @@ function bindSettingsEvents(settings, callbacks) {
             } catch (err) {
                 toastr.error(`Story State update failed: ${err?.message || err}`, 'VectTauri Story State', { timeOut: 10000 });
             } finally {
+                _ssBusy(false);
+                _ssRefresh(true);
+            }
+        });
+
+        $('#VectTauri_story_state_rebuild').on('click', async () => {
+            const uuid = _ssChat();
+            if (!uuid) { toastr.warning('Open a chat first.', 'VectTauri Story State'); return; }
+            const $label = $('#VectTauri_story_state_rebuild span');
+            const idleLabel = $label.text();
+            _ssBusy(true);
+            try {
+                const { rebuildStoryState, estimateRebuildCalls } = await _ssLoad();
+                const messages = (getContext().chat || []).filter(m => m.mes && m.mes.trim().length > 0);
+                const calls = estimateRebuildCalls(messages);
+                if (calls === 0) { toastr.info('This chat has no readable messages yet.', 'VectTauri Story State'); return; }
+                if (!confirm(`Rebuild the story state from the whole chat?\n\nThis reads ${messages.length} message(s) from the start in ${calls} step(s) — about ${calls} LLM call(s) — and replaces the current note. "Undo last auto-update" can restore the old one.\n\nNothing is changed unless every step succeeds.`)) return;
+                const result = await rebuildStoryState({
+                    uuid,
+                    messages,
+                    settings: { ...extension_settings.vecttauri, ...settings },
+                    onProgress: (done, total) => $label.text(`Rebuilding ${done}/${total}…`),
+                });
+                if (result.status === 'updated') toastr.success(result.message, 'VectTauri Story State');
+                else if (result.status === 'skipped') toastr.info(result.message || 'Nothing to rebuild.', 'VectTauri Story State');
+                else toastr.error(result.message, 'VectTauri Story State', { timeOut: 12000 });
+            } catch (err) {
+                toastr.error(`Story State rebuild failed: ${err?.message || err}`, 'VectTauri Story State', { timeOut: 10000 });
+            } finally {
+                $label.text(idleLabel);
                 _ssBusy(false);
                 _ssRefresh(true);
             }

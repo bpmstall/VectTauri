@@ -59,6 +59,7 @@ import {
     resolveStoryStateConfig, truncateAtLine, parseStoryStateReply, isSuspectShrink, buildStoryStateBlock,
     getStoryStateRecord, getStoryStateText, setStoryStateText, clearStoryState, undoStoryState,
     updateStoryState, onExtractionRun, runStoryStateInjection, formatMessagesForStoryState,
+    rebuildStoryState, takeBackfillChunk, estimateRebuildCalls,
 } from '../core/story-state.js';
 import { STORY_STATE_PROMPT_TAG } from '../core/constants.js';
 
@@ -467,5 +468,105 @@ describe('runStoryStateInjection', () => {
     it('never throws', () => {
         mocks.setExtensionPrompt.mockImplementationOnce(() => { throw new Error('host broke'); });
         expect(() => runStoryStateInjection(BASE_SETTINGS())).not.toThrow();
+    });
+});
+
+
+describe('rebuildStoryState (whole-chat backfill)', () => {
+    // 70 short messages → 3 steps (30 + 30 + 10), because a step reads at most 30 messages.
+    const settings = () => BASE_SETTINGS();
+
+    it('takeBackfillChunk walks FORWARD, so the oldest messages are never dropped', () => {
+        const { text, next } = takeBackfillChunk(msgs(70), 0, 70);
+        expect(next).toBe(30);
+        expect(text).toContain('message 0');
+        expect(text).toContain('message 29');
+        expect(text).not.toContain('message 30');
+    });
+
+    it('estimateRebuildCalls matches the chunking, and skips unreadable messages', () => {
+        expect(estimateRebuildCalls(msgs(70))).toBe(3);
+        expect(estimateRebuildCalls(msgs(30))).toBe(1);
+        expect(estimateRebuildCalls([])).toBe(0);
+        expect(estimateRebuildCalls([{ mes: '' }, { mes: '   ' }])).toBe(0);
+    });
+
+    it('reads the chat from the first message and feeds the working note back each step', async () => {
+        reply(NOTE_A); reply(NOTE_B); reply(NOTE_B);
+        const progress = [];
+        const res = await rebuildStoryState({
+            uuid: 'uuid-1', messages: msgs(70), settings: settings(), onProgress: (d, t) => progress.push([d, t]),
+        });
+        expect(res.status).toBe('updated');
+        expect(mocks.postChatCompletion).toHaveBeenCalledTimes(3);
+        const prompts = mocks.postChatCompletion.mock.calls.map(c => c[0].messages[0].content);
+        expect(prompts[0]).toContain('message 0');                 // the premise end of the chat IS read
+        expect(prompts[0]).not.toContain('message 30');
+        expect(prompts[1]).toContain(NOTE_A);                      // step 2 starts from step 1's note
+        expect(prompts[1]).toContain('message 30');
+        expect(prompts[2]).toContain('message 69');
+        expect(progress).toEqual([[1, 3], [2, 3], [3, 3]]);
+        const rec = getStoryStateRecord('uuid-1');
+        expect(rec.text).toBe(NOTE_B);
+        expect(rec.coveredIdx).toBe(70);
+    });
+
+    it('keeps the previous note as the undo target and starts the rebuild from an EMPTY note', async () => {
+        setStoryStateText('uuid-1', NOTE_A);
+        reply(NOTE_B);
+        await rebuildStoryState({ uuid: 'uuid-1', messages: msgs(10), settings: settings() });
+        expect(mocks.postChatCompletion.mock.calls[0][0].messages[0].content).not.toContain(NOTE_A);
+        const rec = getStoryStateRecord('uuid-1');
+        expect(rec.prev).toBe(NOTE_A);
+        expect(undoStoryState('uuid-1')).toBe(true);
+        expect(getStoryStateText('uuid-1')).toBe(NOTE_A);
+    });
+
+    it('is all-or-nothing: a failed step leaves the existing note untouched', async () => {
+        setStoryStateText('uuid-1', NOTE_A);
+        reply(NOTE_B);                                              // step 1 ok
+        mocks.postChatCompletion.mockRejectedValueOnce(new mocks.LlmCallError('boom', { kind: 'http' }));
+        const res = await rebuildStoryState({ uuid: 'uuid-1', messages: msgs(70), settings: settings() });
+        expect(res.status).toBe('failed');
+        expect(res.message).toMatch(/step 2\/3/);
+        expect(res.message).toMatch(/not changed/);
+        expect(getStoryStateText('uuid-1')).toBe(NOTE_A);
+    });
+
+    it('rejects an unusable reply mid-way without touching the note', async () => {
+        setStoryStateText('uuid-1', NOTE_A);
+        reply('no headers here at all');
+        const res = await rebuildStoryState({ uuid: 'uuid-1', messages: msgs(10), settings: settings() });
+        expect(res.status).toBe('failed');
+        expect(getStoryStateText('uuid-1')).toBe(NOTE_A);
+    });
+
+    it('respects the lock and the empty chat, with no LLM call', async () => {
+        const locked = await rebuildStoryState({ uuid: 'uuid-1', messages: msgs(10), settings: BASE_SETTINGS({ story_state_locked: true }) });
+        expect(locked).toMatchObject({ status: 'skipped', reason: 'locked' });
+        const empty = await rebuildStoryState({ uuid: 'uuid-1', messages: [], settings: settings() });
+        expect(empty).toMatchObject({ status: 'skipped', reason: 'no_new_messages' });
+        expect(mocks.postChatCompletion).not.toHaveBeenCalled();
+    });
+
+    it('does not run twice at once for one chat', async () => {
+        let release;
+        mocks.postChatCompletion.mockImplementationOnce(() => new Promise((r) => { release = () => r({ content: NOTE_A }); }));
+        const first = rebuildStoryState({ uuid: 'uuid-1', messages: msgs(10), settings: settings() });
+        const second = await rebuildStoryState({ uuid: 'uuid-1', messages: msgs(10), settings: settings() });
+        expect(second).toMatchObject({ status: 'skipped', reason: 'busy' });
+        await new Promise(r => setTimeout(r, 0));
+        release();
+        expect((await first).status).toBe('updated');
+    });
+
+    it('later incremental updates continue from the end of the rebuilt chat', async () => {
+        reply(NOTE_A);
+        await rebuildStoryState({ uuid: 'uuid-1', messages: msgs(10), settings: settings() });
+        reply(NOTE_B);
+        await updateStoryState({ uuid: 'uuid-1', messages: msgs(14), boundary: 14, settings: settings() });
+        const prompt = mocks.postChatCompletion.mock.calls[1][0].messages[0].content;
+        expect(prompt).toContain('message 10');
+        expect(prompt).not.toContain('message 9');
     });
 });

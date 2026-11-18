@@ -298,6 +298,16 @@ async function _callLlm(prompt, settings, maxTokens) {
 // Update flow
 // ---------------------------------------------------------------------------
 
+/** One chat message as a prompt line ('' when nothing readable is left after cleaning). */
+function _formatFeedLine(m) {
+    const speaker = m?.name || (m?.is_user ? 'User' : 'Assistant');
+    let text = String(m?.mes ?? '');
+    text = stripReasoningBlocks(text);
+    text = String(cleanText(text) ?? '').trim();
+    if (!text) return '';
+    return `${speaker}: ${StringUtils.truncateCodePoints(text, FEED_MESSAGE_CHAR_CAP)}`;
+}
+
 /**
  * Format the not-yet-covered messages for the prompt: newest-first budget,
  * chronological output, reasoning stripped, each message capped.
@@ -308,13 +318,8 @@ export function formatMessagesForStoryState(messages) {
     const picked = [];
     let total = 0;
     for (let i = messages.length - 1; i >= 0 && picked.length < FEED_MAX_MESSAGES; i--) {
-        const m = messages[i];
-        const speaker = m?.name || (m?.is_user ? 'User' : 'Assistant');
-        let text = String(m?.mes ?? '');
-        text = stripReasoningBlocks(text);
-        text = String(cleanText(text) ?? '').trim();
-        if (!text) continue;
-        const line = `${speaker}: ${StringUtils.truncateCodePoints(text, FEED_MESSAGE_CHAR_CAP)}`;
+        const line = _formatFeedLine(messages[i]);
+        if (!line) continue;
         if (picked.length && total + line.length > FEED_TOTAL_CHAR_CAP) break;
         picked.push(line);
         total += line.length;
@@ -420,6 +425,148 @@ async function _runUpdate({ uuid, messages, boundary, settings: rawSettings }) {
         document.dispatchEvent(new CustomEvent('vecttauri:story-state-updated', { detail: { uuid } }));
     }
     return { status: 'updated', reason: 'ok', message: `Story State updated (${parsed.text.length} characters).` };
+}
+
+// ---------------------------------------------------------------------------
+// Rebuild from the whole chat
+// ---------------------------------------------------------------------------
+// An incremental update only reads the newest FEED_MAX_MESSAGES, so a note started
+// in a chat that is already 100+ messages long would never see the premise from
+// the beginning. Rebuild walks the whole chat oldest → newest in chunks, feeding
+// the working note back in each time, and commits only if EVERY step succeeded.
+
+/**
+ * Take the next chunk of a chat for a rebuild, walking FORWARD from `start`
+ * (the newest-first rule of an incremental update would drop the oldest lines).
+ * Always consumes at least one readable message so the walk cannot stall.
+ *
+ * @param {object[]} list
+ * @param {number} start
+ * @param {number} end
+ * @returns {{ text: string, next: number }} next = index to continue from
+ */
+export function takeBackfillChunk(list, start, end) {
+    const lines = [];
+    let total = 0;
+    let i = start;
+    for (; i < end && lines.length < FEED_MAX_MESSAGES; i++) {
+        const line = _formatFeedLine(list[i]);
+        if (!line) continue;
+        if (lines.length && total + line.length > FEED_TOTAL_CHAR_CAP) break;
+        lines.push(line);
+        total += line.length;
+    }
+    return { text: lines.join('\n\n'), next: i };
+}
+
+/**
+ * How many LLM calls a rebuild of this chat would make (for the confirm dialog).
+ * @param {object[]} messages
+ * @returns {number}
+ */
+export function estimateRebuildCalls(messages) {
+    const list = Array.isArray(messages) ? messages : [];
+    let i = 0;
+    let calls = 0;
+    while (i < list.length) {
+        const { text, next } = takeBackfillChunk(list, i, list.length);
+        if (next <= i) break;
+        if (text) calls++;
+        i = next;
+    }
+    return calls;
+}
+
+/**
+ * Rebuild the note from the whole chat. Never throws; never touches the stored
+ * note unless every step succeeded. The previous note becomes the undo target.
+ *
+ * @param {object} params
+ * @param {string} params.uuid
+ * @param {object[]} params.messages  filtered chat messages (non-empty `mes`)
+ * @param {object} params.settings
+ * @param {(done: number, total: number) => void} [params.onProgress]
+ * @returns {Promise<StoryStateResult>}
+ */
+export function rebuildStoryState(params) {
+    const uuid = params?.uuid;
+    if (!uuid) return Promise.resolve({ status: 'skipped', reason: 'no_chat', message: 'No chat is open.' });
+    if (_inFlight.has(uuid)) return Promise.resolve({ status: 'skipped', reason: 'busy', message: 'An update is already running.' });
+    const run = _runRebuild(params)
+        .catch((err) => {
+            log.warn('[StoryState] rebuild crashed (state untouched):', err);
+            return { status: 'failed', reason: 'error', message: `Story State rebuild failed: ${err?.message || err}` };
+        })
+        .finally(() => _inFlight.delete(uuid));
+    _inFlight.set(uuid, run);
+    return run;
+}
+
+async function _runRebuild({ uuid, messages, settings: rawSettings, onProgress }) {
+    const settings = resolveLlmEffectiveSettings(rawSettings);
+    const cfg = resolveStoryStateConfig(rawSettings);
+    if (cfg.locked) return { status: 'skipped', reason: 'locked', message: 'Story State is locked — unlock it to allow a rebuild.' };
+
+    const list = Array.isArray(messages) ? messages : [];
+    const total = estimateRebuildCalls(list);
+    if (total === 0) return { status: 'skipped', reason: 'no_new_messages', message: 'The chat has no readable messages to build a note from.' };
+
+    const before = getStoryStateRecord(uuid);
+    let working = '';
+    let done = 0;
+    let i = 0;
+    while (i < list.length) {
+        const { text: formatted, next } = takeBackfillChunk(list, i, list.length);
+        if (next <= i) break;
+        i = next;
+        if (!formatted) continue;
+
+        const prompt = buildStoryStateUpdatePrompt({
+            previous: working,
+            messages: formatted,
+            maxChars: cfg.maxChars,
+            mode: settings.cjk_tokenizer_mode || 'intl',
+        });
+        let reply;
+        try {
+            reply = await _callLlm(prompt, settings, cfg.maxTokens);
+        } catch (err) {
+            const r = _describeCallFailure(err);
+            return { ...r, message: `Rebuild stopped at step ${done + 1}/${total}: ${r.message} The existing note was not changed.` };
+        }
+        const parsed = parseStoryStateReply(reply, { maxChars: cfg.maxChars });
+        if (!parsed.ok) {
+            log.warn(`[StoryState] rebuild step ${done + 1}/${total} rejected (${parsed.reason}). Reply start: ${String(reply ?? '').slice(0, 200)}`);
+            return { status: 'failed', reason: parsed.reason, message: `Rebuild stopped at step ${done + 1}/${total}: the model's reply was unusable (${parsed.reason}). The existing note was not changed.` };
+        }
+        if (isSuspectShrink(working, parsed.text)) {
+            return { status: 'failed', reason: 'suspect', message: `Rebuild stopped at step ${done + 1}/${total}: the note shrank sharply, so it was treated as unreliable. The existing note was not changed.` };
+        }
+        working = parsed.text;
+        done++;
+        try { onProgress?.(done, total); } catch { /* progress is cosmetic */ }
+    }
+
+    // A rebuild can take minutes; honour a lock or hand edit made meanwhile.
+    if (resolveStoryStateConfig(extension_settings?.vecttauri ?? rawSettings).locked) {
+        return { status: 'skipped', reason: 'locked', message: 'Story State was locked during the rebuild — result discarded.' };
+    }
+    if (getStoryStateRecord(uuid).text !== before.text) {
+        return { status: 'skipped', reason: 'edited_during_update', message: 'The note was edited during the rebuild — result discarded.' };
+    }
+
+    _saveRecord(uuid, {
+        text: working,
+        prev: before.text || null,
+        updatedAt: Date.now(),
+        coveredIdx: list.length,
+        pendingWindows: 0,
+    });
+    log.lifecycle(`[StoryState] rebuilt from ${list.length} message(s) in ${done} step(s) (${before.text.length} → ${working.length} chars)`);
+    if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
+        document.dispatchEvent(new CustomEvent('vecttauri:story-state-updated', { detail: { uuid } }));
+    }
+    return { status: 'updated', reason: 'ok', message: `Story State rebuilt from the whole chat (${done} step(s), ${working.length} characters).` };
 }
 
 /**

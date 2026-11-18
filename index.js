@@ -318,8 +318,9 @@ const defaultSettings = {
     eventbase_injection_format: 'densetext',      // Injection format: 'densetext' or 'jsonarray'
     eventbase_core_facts_max: 8,                  // Max pinned "core fact" events always injected (0 = off, 0-30). Pins are set in the Database Browser.
     // Story State: one compact "current situation" note per chat, always injected and
-    // auto-updated by the LLM every N extraction windows. OPT-IN — costs extra LLM calls.
-    story_state_enabled: false,
+    // auto-updated by the LLM every N extraction windows. ON by default: it only runs inside
+    // EventBase auto-sync, which already needs an LLM, and costs one extra call per update.
+    story_state_enabled: true,
     story_state_update_every: 3,                  // Extraction windows between updates (1-20)
     story_state_max_tokens: 700,                  // LLM output budget for one update
     story_state_max_chars: 1800,                  // Hard cap on the stored note (cut at a line boundary)
